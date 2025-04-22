@@ -52,7 +52,7 @@ def export_onnx(args):
     dynamic = {'outputs': {0: 'batch', 1: 'anchors'}}
 
     m = torch.load('./weights/best.pt')['model'].float()
-    x = torch.zeros((1, 3, args.input_size, args.input_size))
+    x = torch.zeros((1, 15, args.input_size))
 
     torch.onnx.export(m.cpu(), x.cpu(),
                       f='./weights/best.onnx',
@@ -75,10 +75,8 @@ def export_onnx(args):
 
 def wh2xy(x):
     y = x.clone() if isinstance(x, torch.Tensor) else numpy.copy(x)
-    y[:, 0] = x[:, 0] - x[:, 2] / 2  # top left x
-    y[:, 1] = x[:, 1] - x[:, 3] / 2  # top left y
-    y[:, 2] = x[:, 0] + x[:, 2] / 2  # bottom right x
-    y[:, 3] = x[:, 1] + x[:, 3] / 2  # bottom right y
+    y[:, 0] = x[:, 0] - x[:, 1] / 2  # top left x
+    y[:, 1] = x[:, 0] + x[:, 1] / 2  # top left y
     return y
 
 
@@ -87,19 +85,16 @@ def make_anchors(x, strides, offset=0.5):
     anchor_tensor, stride_tensor = [], []
     dtype, device = x[0].dtype, x[0].device
     for i, stride in enumerate(strides):
-        _, _, h, w = x[i].shape
+        _, _, w = x[i].shape
         sx = torch.arange(end=w, device=device, dtype=dtype) + offset  # shift x
-        sy = torch.arange(end=h, device=device, dtype=dtype) + offset  # shift y
-        sy, sx = torch.meshgrid(sy, sx)
-        anchor_tensor.append(torch.stack((sx, sy), -1).view(-1, 2))
-        stride_tensor.append(torch.full((h * w, 1), stride, dtype=dtype, device=device))
+        anchor_tensor.append(sx.view(-1,1))
+        stride_tensor.append(torch.full((w,1), stride, dtype=dtype, device=device))
     return torch.cat(anchor_tensor), torch.cat(stride_tensor)
-
 
 def compute_metric(output, target, iou_v):
     # intersection(N,M) = (rb(N,M,2) - lt(N,M,2)).clamp(0).prod(2)
-    (a1, a2) = target[:, 1:].unsqueeze(1).chunk(2, 2)
-    (b1, b2) = output[:, :4].unsqueeze(0).chunk(2, 2)
+    (a1, a2) = target[:, 1:].unsqueeze(1).chunk(2,2)
+    (b1, b2) = output[:, :2].unsqueeze(0).chunk(2,2)
     intersection = (torch.min(a2, b2) - torch.max(a1, b1)).clamp(0).prod(2)
     # IoU = intersection / (area1 + area2 - intersection)
     iou = intersection / ((a2 - a1).prod(2) + (b2 - b1).prod(2) - intersection + 1e-7)
@@ -108,7 +103,7 @@ def compute_metric(output, target, iou_v):
     correct = correct.astype(bool)
     for i in range(len(iou_v)):
         # IoU > threshold and classes match
-        x = torch.where((iou >= iou_v[i]) & (target[:, 0:1] == output[:, 5]))
+        x = torch.where((iou >= iou_v[i]) & (target[:, 0:1] == output[:, 3]))
         if x[0].shape[0]:
             matches = torch.cat((torch.stack(x, 1),
                                  iou[x[0], x[1]][:, None]), 1).cpu().numpy()  # [label, detect, iou]
@@ -121,18 +116,18 @@ def compute_metric(output, target, iou_v):
 
 
 def non_max_suppression(outputs, confidence_threshold=0.001, iou_threshold=0.65):
-    max_wh = 7680
-    max_det = 300
-    max_nms = 30000
+    max_wh = 50000 # 
+    max_det = 300 # Максимальное количество предсказанных bbox
+    max_nms = 30000 # Количество bbox, рассматриваемх как кандидаты на ответ
 
     bs = outputs.shape[0]  # batch size
-    nc = outputs.shape[1] - 4  # number of classes
-    xc = outputs[:, 4:4 + nc].amax(1) > confidence_threshold  # candidates
+    nc = outputs.shape[1] - 2  # number of classes
+    xc = outputs[:, 2:2 + nc].amax(1) > confidence_threshold  # candidates
 
     # Settings
     start = time()
     limit = 0.5 + 0.05 * bs  # seconds to quit after
-    output = [torch.zeros((0, 6), device=outputs.device)] * bs
+    output = [torch.zeros((0, 4), device=outputs.device)] * bs
     for index, x in enumerate(outputs):  # image index, image inference
         x = x.transpose(0, -1)[xc[index]]  # confidence
 
@@ -140,12 +135,12 @@ def non_max_suppression(outputs, confidence_threshold=0.001, iou_threshold=0.65)
         if not x.shape[0]:
             continue
 
-        # matrix nx6 (box, confidence, cls)
-        box, cls = x.split((4, nc), 1)
-        box = wh2xy(box)  # (cx, cy, w, h) to (x1, y1, x2, y2)
+        # matrix nx4 (box, confidence, cls)
+        box, cls = x.split((2, nc), 1)
+        box = wh2xy(box)  # (cx, w) to (x1, x2)
         if nc > 1:
             i, j = (cls > confidence_threshold).nonzero(as_tuple=False).T
-            x = torch.cat((box[i], x[i, 4 + j, None], j[:, None].float()), 1)
+            x = torch.cat((box[i], x[i, 2 + j, None], j[:, None].float()), 1)
         else:  # best class only
             conf, j = cls.max(1, keepdim=True)
             x = torch.cat((box, conf, j.float()), 1)[conf.view(-1) > confidence_threshold]
@@ -154,11 +149,18 @@ def non_max_suppression(outputs, confidence_threshold=0.001, iou_threshold=0.65)
         n = x.shape[0]  # number of boxes
         if not n:  # no boxes
             continue
-        x = x[x[:, 4].argsort(descending=True)[:max_nms]]  # sort by confidence and remove excess boxes
+        x = x[x[:, 2].argsort(descending=True)[:max_nms]]  # sort by confidence and remove excess boxes
 
         # Batched NMS
-        c = x[:, 5:6] * max_wh  # classes
-        boxes, scores = x[:, :4] + c, x[:, 4]  # boxes, scores
+        c = x[:, 3:4] * max_wh  # classes
+        boxes, scores = x[:, :2] + c, x[:, 2]  # boxes, scores
+        # Далее хочу из 1d bbox сделать 2d bbox, для этого сделаю всем одинаковый низ и верх
+        nboxes = boxes.shape[0]
+        y1 = torch.zeros((nboxes, 1)).cuda()  # [N, 1]
+        y2 = torch.ones((nboxes, 1)).cuda()   # [N, 1]
+        # Объединяем в [x1, y1, x2, y2]
+        boxes = torch.cat([boxes[:, 0:1], y1, boxes[:, 1:2], y2], dim=1)
+
         indices = torchvision.ops.nms(boxes, scores, iou_threshold)  # NMS
         indices = indices[:max_det]  # limit detections
 
@@ -301,32 +303,27 @@ def compute_ap(tp, conf, output, target, plot=False, names=(), eps=1E-16):
 
 
 def compute_iou(box1, box2, eps=1e-7):
-    # Returns Intersection over Union (IoU) of box1(1,4) to box2(n,4)
+    # Returns Intersection over Union (IoU) of box1(1,2) to box2(n,2)
 
     # Get the coordinates of bounding boxes
-    b1_x1, b1_y1, b1_x2, b1_y2 = box1.chunk(4, -1)
-    b2_x1, b2_y1, b2_x2, b2_y2 = box2.chunk(4, -1)
-    w1, h1 = b1_x2 - b1_x1, b1_y2 - b1_y1 + eps
-    w2, h2 = b2_x2 - b2_x1, b2_y2 - b2_y1 + eps
+    b1_x1, b1_x2 = box1.chunk(2, -1)
+    b2_x1, b2_x2 = box2.chunk(2, -1)
+    w1 = b1_x2 - b1_x1 + eps
+    w2 = b2_x2 - b2_x1 + eps
 
     # Intersection area
-    inter = (b1_x2.minimum(b2_x2) - b1_x1.maximum(b2_x1)).clamp(0) * \
-            (b1_y2.minimum(b2_y2) - b1_y1.maximum(b2_y1)).clamp(0)
+    inter = (b1_x2.minimum(b2_x2) - b1_x1.maximum(b2_x1)).clamp(0)
 
     # Union Area
-    union = w1 * h1 + w2 * h2 - inter + eps
+    union = w1 + w2 - inter + eps
 
     # IoU
     iou = inter / union
     cw = b1_x2.maximum(b2_x2) - b1_x1.minimum(b2_x1)  # convex (smallest enclosing box) width
-    ch = b1_y2.maximum(b2_y2) - b1_y1.minimum(b2_y1)  # convex height
-    c2 = cw ** 2 + ch ** 2 + eps  # convex diagonal squared
-    rho2 = ((b2_x1 + b2_x2 - b1_x1 - b1_x2) ** 2 + (b2_y1 + b2_y2 - b1_y1 - b1_y2) ** 2) / 4  # center dist ** 2
+    c2 = cw ** 2 + eps  # convex diagonal squared
+    rho2 = ((b2_x1 + b2_x2 - b1_x1 - b1_x2) ** 2) / 4  # center dist ** 2
     # https://github.com/Zzh-tju/DIoU-SSD-pytorch/blob/master/utils/box/box_utils.py#L47
-    v = (4 / math.pi ** 2) * (torch.atan(w2 / h2) - torch.atan(w1 / h1)).pow(2)
-    with torch.no_grad():
-        alpha = v / (v - iou + (1 + eps))
-    return iou - (rho2 / c2 + v * alpha)  # CIoU
+    return iou - (rho2 / c2)  # CIoU
 
 
 def strip_optimizer(filename):
@@ -423,7 +420,7 @@ class LinearLR:
         min_lr = params['min_lr']
 
         warmup_steps = int(max(params['warmup_epochs'] * num_steps, 100))
-        decay_steps = int(args.epochs * num_steps - warmup_steps)
+        decay_steps = int(args["epochs"] * num_steps - warmup_steps)
 
         warmup_lr = numpy.linspace(min_lr, max_lr, int(warmup_steps), endpoint=False)
         decay_lr = numpy.linspace(max_lr, min_lr, decay_steps)
@@ -501,7 +498,7 @@ class Assigner(torch.nn.Module):
 
         num_anchors = anc_points.shape[0]
         shape = gt_bboxes.shape
-        lt, rb = gt_bboxes.view(-1, 1, 4).chunk(2, 2)
+        lt, rb = gt_bboxes.view(-1, 1, 2).chunk(2, 2)
         mask_in_gts = torch.cat((anc_points[None] - lt, rb - anc_points[None]), dim=2)
         mask_in_gts = mask_in_gts.view(shape[0], shape[1], num_anchors, -1).amin(3).gt_(self.eps)
         na = pd_bboxes.shape[-2]
@@ -691,7 +688,7 @@ class ComputeLoss:
 
     def box_decode(self, anchor_points, pred_dist):
         b, a, c = pred_dist.shape
-        pred_dist = pred_dist.view(b, a, 4, c // 4)
+        pred_dist = pred_dist.view(b, a, 2, c // 2)
         pred_dist = pred_dist.softmax(3)
         pred_dist = pred_dist.matmul(self.project.type(pred_dist.dtype))
         lt, rb = pred_dist.chunk(2, -1)
@@ -701,7 +698,7 @@ class ComputeLoss:
 
     def __call__(self, outputs, targets):
         x = torch.cat([i.view(outputs[0].shape[0], self.no, -1) for i in outputs], dim=2)
-        pred_distri, pred_scores = x.split(split_size=(self.reg_max * 4, self.nc), dim=1)
+        pred_distri, pred_scores = x.split(split_size=(self.reg_max * 2, self.nc), dim=1)
 
         pred_scores = pred_scores.permute(0, 2, 1).contiguous()
         pred_distri = pred_distri.permute(0, 2, 1).contiguous()
@@ -717,27 +714,24 @@ class ComputeLoss:
 
         targets = torch.cat((idx, cls, box), dim=1).to(self.device)
         if targets.shape[0] == 0:
-            gt = torch.zeros(batch_size, 0, 5, device=self.device)
+            gt = torch.zeros(batch_size, 0, 3, device=self.device)
         else:
             i = targets[:, 0]
             _, counts = i.unique(return_counts=True)
             counts = counts.to(dtype=torch.int32)
-            gt = torch.zeros(batch_size, counts.max(), 5, device=self.device)
+            gt = torch.zeros(batch_size, counts.max(), 3, device=self.device)
             for j in range(batch_size):
                 matches = i == j
                 n = matches.sum()
                 if n:
                     gt[j, :n] = targets[matches, 1:]
-            x = gt[..., 1:5].mul_(input_size[[1, 0, 1, 0]])
+            x = gt[..., 1:3].mul_(input_size[[0, 0]])
             y = torch.empty_like(x)
-            dw = x[..., 2] / 2  # half-width
-            dh = x[..., 3] / 2  # half-height
+            dw = x[..., 1] / 2  # half-width
             y[..., 0] = x[..., 0] - dw  # top left x
-            y[..., 1] = x[..., 1] - dh  # top left y
-            y[..., 2] = x[..., 0] + dw  # bottom right x
-            y[..., 3] = x[..., 1] + dh  # bottom right y
-            gt[..., 1:5] = y
-        gt_labels, gt_bboxes = gt.split((1, 4), 2)
+            y[..., 1] = x[..., 0] + dw  # bottom right x
+            gt[..., 1:3] = y
+        gt_labels, gt_bboxes = gt.split((1, 2), 2)
         mask_gt = gt_bboxes.sum(2, keepdim=True).gt_(0)
 
         pred_bboxes = self.box_decode(anchor_points, pred_distri)

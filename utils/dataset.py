@@ -8,172 +8,164 @@ import torch
 from PIL import Image
 from torch.utils import data
 
+import yaml
+
 FORMATS = 'bmp', 'dng', 'jpeg', 'jpg', 'mpo', 'png', 'tif', 'tiff', 'webp'
 
-
 class Dataset(data.Dataset):
-    def __init__(self, filenames, input_size, params, augment):
-        self.params = params
-        self.mosaic = augment
-        self.augment = augment
+    
+    def __init__(self, filename, input_size, params, augment, is_test=False):
+        super().__init__()
+        self.is_test = is_test
         self.input_size = input_size
-
-        # Read labels
-        labels = self.load_label(filenames)
-        self.labels = list(labels.values())
-        self.filenames = list(labels.keys())  # update
-        self.n = len(self.filenames)  # number of samples
-        self.indices = range(self.n)
-        # Albumentations (optional, only used if package is installed)
-        self.albumentations = Albumentations()
-
+        self.params = params
+        self.augment = augment
+        self.filename = filename
+        # Загружаем конфигурацию датасета
+        self._parse_yaml()
+        # Загружаем пути к данным
+        self._load_data()
+        # Загружаем отметки
+        self._load_labels()
+        
+        self.n = len(self.filenames)    # Количество дынных
+        self.indices = range(self.n)    # Индексы данных
+        
+    def _parse_yaml(self):
+        """ 
+            Считывает их файла настроек:
+            - путь к данным и разметке
+            - Информацию о названиях классов и их количестве
+        """
+        data = yaml.safe_load(open(self.filename,encoding="utf-8")) # Парсим yaml - файл
+        
+        # Загружаем названия классов
+        self.class_names = [i for i in data["names"].values()]
+        # Считаем количество классов
+        self.num_classes = len(self.class_names)
+        # Считываем путь к данным
+        self.data_path = data["val_data"] if self.is_test else data["train_data"]
+        # Считываем путь к разметке
+        self.labels_path = data["val_labels"] if self.is_test else data["train_labels"]
+        
+    def _load_data(self):
+        """
+            Записывает все имена файлов данных в список.
+        """
+        self.filenames = []
+        for file in os.listdir(self.data_path):
+            self.filenames.append(os.path.join(self.data_path, file))
+        
+    def _load_labels(self):
+        """
+        Загружает разметку из кэша или создаёт кэш, если его нет.
+        """
+        # Загружаем кэш
+        path = os.path.join(self.labels_path, "labels.cache")
+        if os.path.exists(path):
+            self.labels = torch.load(path)
+            return 
+        # Не нашли кэш
+        dict = {}
+        for filename in self.filenames:
+            try:
+                #  Получаем имя файла
+                name = os.path.basename(filename).rsplit(".", 1)[0] + ".txt"
+                label_file = os.path.join(self.labels_path, name)
+                # Читаем отметки
+                if os.path.isfile(label_file):
+                    with open(label_file) as f:
+                        # Разбиваем строки
+                        label = [x.split() for x in f.read().strip().splitlines() if len(x)]
+                        label = numpy.array(label, dtype=numpy.float32)
+                    nl = len(label)
+                    if nl:
+                        assert (label >= 0).all()   # Проврка неотрицательности
+                        assert label.shape[1] == 3  # 3 части: класс, центр, ширина
+                        assert (label[:, 1:] <= 1).all() # обьект не выходит за границы
+                        _, i = numpy.unique(label, axis=0, return_index=True)
+                        if len(i) < nl:  # Проверка дубликатов
+                            label = label[i]  # Удаление дубликатов
+                    else:
+                        label = numpy.zeros((0, 3),dtype=numpy.float32)
+                else:
+                    label = numpy.zeros((0, 3),dtype=numpy.float32)
+            except FileNotFoundError:
+                label = numpy.zeros((0, 3), dtype=numpy.float32)
+            except AssertionError:
+                continue
+            # Добавляем отметку 
+            dict[filename] = label
+        # Кэшируем разметку
+        torch.save(dict, path)
+        self.labels = dict
+        return
+    
+    def load_image(self, i):
+        with open(self.filenames[i], "rb") as f:
+            loaded_binary = f.read()
+        data = numpy.frombuffer(loaded_binary, dtype=numpy.float32).reshape(15, -1)
+        w = data.shape[-1]
+        return data, (15, w)
+    
     def __getitem__(self, index):
+        """
+            Релизация метода для получения обьекта из датасета
+            Важно:
+            Наши данные - 50000
+            Сеть принимает 49152=(2^16)*3
+            Можно просто взять интерполяцию, а можно взять случайный сдвиг и обрезку!
+            
+        """
         index = self.indices[index]
+        
+        data, shape = self.load_image(index)
+        w = data.shape[-1]
+        
+        # Resize
+        data, ratio = resize(data, self.input_size, self.augment)
 
-        if self.mosaic and random.random() < self.params['mosaic']:
-            # Load MOSAIC
-            image, label = self.load_mosaic(index, self.params)
-            # MixUp augmentation
-            if random.random() < self.params['mix_up']:
-                index = random.choice(self.indices)
-                mix_image1, mix_label1 = image, label
-                mix_image2, mix_label2 = self.load_mosaic(index, self.params)
-
-                image, label = mix_up(mix_image1, mix_label1, mix_image2, mix_label2)
-        else:
-            # Load image
-            image, shape = self.load_image(index)
-            h, w = image.shape[:2]
-
-            # Resize
-            image, ratio, pad = resize(image, self.input_size, self.augment)
-
-            label = self.labels[index].copy()
-            if label.size:
-                label[:, 1:] = wh2xy(label[:, 1:], ratio[0] * w, ratio[1] * h, pad[0], pad[1])
-            if self.augment:
-                image, label = random_perspective(image, label, self.params)
+        label = self.labels[self.filenames[index]].copy()
+        if label.size:
+            label[:, 1:] = wh2xy(label[:, 1:], ratio[1])
+        # if self.augment:
+        #     image, label = random_perspective(image, label, self.params)
 
         nl = len(label)  # number of labels
-        h, w = image.shape[:2]
+        w = data.shape[-1]
         cls = label[:, 0:1]
-        box = label[:, 1:5]
-        box = xy2wh(box, w, h)
+        box = label[:, 1:3]
+        box = xy2wh(box, w)
 
-        if self.augment:
-            # Albumentations
-            image, box, cls = self.albumentations(image, box, cls)
-            nl = len(box)  # update after albumentations
-            # HSV color-space
-            augment_hsv(image, self.params)
-            # Flip up-down
-            if random.random() < self.params['flip_ud']:
-                image = numpy.flipud(image)
-                if nl:
-                    box[:, 1] = 1 - box[:, 1]
-            # Flip left-right
-            if random.random() < self.params['flip_lr']:
-                image = numpy.fliplr(image)
-                if nl:
-                    box[:, 0] = 1 - box[:, 0]
+        # if self.augment:
+        #     # Albumentations
+        #     data, box, cls = self.albumentations(data, box, cls)
+        #     nl = len(box)  # update after albumentations
+        #     # HSV color-space
+        #     augment_hsv(data, self.params)
+        #     # Flip up-down
+        #     if random.random() < self.params['flip_ud']:
+        #         data = numpy.flipud(data)
+        #         if nl:
+        #             box[:, 1] = 1 - box[:, 1]
+        #     # Flip left-right
+        #     if random.random() < self.params['flip_lr']:
+        #         data = numpy.fliplr(data)
+        #         if nl:
+        #             box[:, 0] = 1 - box[:, 0]
 
         target_cls = torch.zeros((nl, 1))
-        target_box = torch.zeros((nl, 4))
+        target_box = torch.zeros((nl, 2))
         if nl:
             target_cls = torch.from_numpy(cls)
             target_box = torch.from_numpy(box)
 
-        # Convert HWC to CHW, BGR to RGB
-        sample = image.transpose((2, 0, 1))[::-1]
-        sample = numpy.ascontiguousarray(sample)
+        data = numpy.ascontiguousarray(data)
 
-        return torch.from_numpy(sample), target_cls, target_box, torch.zeros(nl)
+        return torch.from_numpy(data), target_cls, target_box, torch.zeros(nl)
 
     def __len__(self):
-        return len(self.filenames)
-
-    def load_image(self, i):
-        image = cv2.imread(self.filenames[i])
-        h, w = image.shape[:2]
-        r = self.input_size / max(h, w)
-        if r != 1:
-            image = cv2.resize(image,
-                               dsize=(int(w * r), int(h * r)),
-                               interpolation=resample() if self.augment else cv2.INTER_LINEAR)
-        return image, (h, w)
-
-    def load_mosaic(self, index, params):
-        label4 = []
-        border = [-self.input_size // 2, -self.input_size // 2]
-        image4 = numpy.full((self.input_size * 2, self.input_size * 2, 3), 0, dtype=numpy.uint8)
-        y1a, y2a, x1a, x2a, y1b, y2b, x1b, x2b = (None, None, None, None, None, None, None, None)
-
-        xc = int(random.uniform(-border[0], 2 * self.input_size + border[1]))
-        yc = int(random.uniform(-border[0], 2 * self.input_size + border[1]))
-
-        indices = [index] + random.choices(self.indices, k=3)
-        random.shuffle(indices)
-
-        for i, index in enumerate(indices):
-            # Load image
-            image, _ = self.load_image(index)
-            shape = image.shape
-            if i == 0:  # top left
-                x1a = max(xc - shape[1], 0)
-                y1a = max(yc - shape[0], 0)
-                x2a = xc
-                y2a = yc
-                x1b = shape[1] - (x2a - x1a)
-                y1b = shape[0] - (y2a - y1a)
-                x2b = shape[1]
-                y2b = shape[0]
-            if i == 1:  # top right
-                x1a = xc
-                y1a = max(yc - shape[0], 0)
-                x2a = min(xc + shape[1], self.input_size * 2)
-                y2a = yc
-                x1b = 0
-                y1b = shape[0] - (y2a - y1a)
-                x2b = min(shape[1], x2a - x1a)
-                y2b = shape[0]
-            if i == 2:  # bottom left
-                x1a = max(xc - shape[1], 0)
-                y1a = yc
-                x2a = xc
-                y2a = min(self.input_size * 2, yc + shape[0])
-                x1b = shape[1] - (x2a - x1a)
-                y1b = 0
-                x2b = shape[1]
-                y2b = min(y2a - y1a, shape[0])
-            if i == 3:  # bottom right
-                x1a = xc
-                y1a = yc
-                x2a = min(xc + shape[1], self.input_size * 2)
-                y2a = min(self.input_size * 2, yc + shape[0])
-                x1b = 0
-                y1b = 0
-                x2b = min(shape[1], x2a - x1a)
-                y2b = min(y2a - y1a, shape[0])
-
-            pad_w = x1a - x1b
-            pad_h = y1a - y1b
-            image4[y1a:y2a, x1a:x2a] = image[y1b:y2b, x1b:x2b]
-
-            # Labels
-            label = self.labels[index].copy()
-            if len(label):
-                label[:, 1:] = wh2xy(label[:, 1:], shape[1], shape[0], pad_w, pad_h)
-            label4.append(label)
-
-        # Concat/clip labels
-        label4 = numpy.concatenate(label4, 0)
-        for x in label4[:, 1:]:
-            numpy.clip(x, 0, 2 * self.input_size, out=x)
-
-        # Augment
-        image4, label4 = random_perspective(image4, label4, params, border)
-
-        return image4, label4
+        return self.n
 
     @staticmethod
     def collate_fn(batch):
@@ -192,73 +184,24 @@ class Dataset(data.Dataset):
                    'idx': indices}
         return torch.stack(samples, dim=0), targets
 
-    @staticmethod
-    def load_label(filenames):
-        path = f'{os.path.dirname(filenames[0])}.cache'
-        if os.path.exists(path):
-            return torch.load(path)
-        x = {}
-        for filename in filenames:
-            try:
-                # verify images
-                with open(filename, 'rb') as f:
-                    image = Image.open(f)
-                    image.verify()  # PIL verify
-                shape = image.size  # image size
-                assert (shape[0] > 9) & (shape[1] > 9), f'image size {shape} <10 pixels'
-                assert image.format.lower() in FORMATS, f'invalid image format {image.format}'
 
-                # verify labels
-                a = f'{os.sep}images{os.sep}'
-                b = f'{os.sep}labels{os.sep}'
-                if os.path.isfile(b.join(filename.rsplit(a, 1)).rsplit('.', 1)[0] + '.txt'):
-                    with open(b.join(filename.rsplit(a, 1)).rsplit('.', 1)[0] + '.txt') as f:
-                        label = [x.split() for x in f.read().strip().splitlines() if len(x)]
-                        label = numpy.array(label, dtype=numpy.float32)
-                    nl = len(label)
-                    if nl:
-                        assert (label >= 0).all()
-                        assert label.shape[1] == 5
-                        assert (label[:, 1:] <= 1).all()
-                        _, i = numpy.unique(label, axis=0, return_index=True)
-                        if len(i) < nl:  # duplicate row check
-                            label = label[i]  # remove duplicates
-                    else:
-                        label = numpy.zeros((0, 5), dtype=numpy.float32)
-                else:
-                    label = numpy.zeros((0, 5), dtype=numpy.float32)
-            except FileNotFoundError:
-                label = numpy.zeros((0, 5), dtype=numpy.float32)
-            except AssertionError:
-                continue
-            x[filename] = label
-        torch.save(x, path)
-        return x
-
-
-def wh2xy(x, w=640, h=640, pad_w=0, pad_h=0):
-    # Convert nx4 boxes
-    # from [x, y, w, h] normalized to [x1, y1, x2, y2] where xy1=top-left, xy2=bottom-right
+def wh2xy(x, w=49152):
+    # from [x, w] normalized to [x1, x2]
     y = numpy.copy(x)
-    y[:, 0] = w * (x[:, 0] - x[:, 2] / 2) + pad_w  # top left x
-    y[:, 1] = h * (x[:, 1] - x[:, 3] / 2) + pad_h  # top left y
-    y[:, 2] = w * (x[:, 0] + x[:, 2] / 2) + pad_w  # bottom right x
-    y[:, 3] = h * (x[:, 1] + x[:, 3] / 2) + pad_h  # bottom right y
+    y[:, 0] = w * (x[:, 0] - x[:, 1] / 2) # left
+    y[:, 1] = w * (x[:, 0] + x[:, 1] / 2) # right
     return y
 
 
-def xy2wh(x, w, h):
+def xy2wh(x, w):
     # warning: inplace clip
-    x[:, [0, 2]] = x[:, [0, 2]].clip(0, w - 1E-3)  # x1, x2
-    x[:, [1, 3]] = x[:, [1, 3]].clip(0, h - 1E-3)  # y1, y2
-
+    x[:, [0, 1]] = x[:, [0, 1]].clip(0, w - 1E-3)  # x1, x2
+    
     # Convert nx4 boxes
-    # from [x1, y1, x2, y2] to [x, y, w, h] normalized where xy1=top-left, xy2=bottom-right
+    # from [x1, x2] to [x, w]
     y = numpy.copy(x)
-    y[:, 0] = ((x[:, 0] + x[:, 2]) / 2) / w  # x center
-    y[:, 1] = ((x[:, 1] + x[:, 3]) / 2) / h  # y center
-    y[:, 2] = (x[:, 2] - x[:, 0]) / w  # width
-    y[:, 3] = (x[:, 3] - x[:, 1]) / h  # height
+    y[:, 0] = ((x[:, 0] + x[:, 1]) / 2) / w  # center
+    y[:, 1] = ((x[:, 1] - x[:, 0]) / 2) / w  # width
     return y
 
 
@@ -288,29 +231,36 @@ def augment_hsv(image, params):
     hsv = cv2.merge((cv2.LUT(h, lut_h), cv2.LUT(s, lut_s), cv2.LUT(v, lut_v)))
     cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR, dst=image)  # no return needed
 
+def interp(data: numpy.ndarray, input_size):
+    original_indices = numpy.linspace(0, 1, data.shape[-1])
+    new_indices = numpy.linspace(0, 1, input_size)
 
-def resize(image, input_size, augment):
+    # Линейная интерполяция
+    return numpy.array([numpy.interp(new_indices, original_indices, d) for d in data])
+
+def zero_pad(data: numpy.ndarray, input_size):
+    if data.shape[1] >= input_size:
+        return data
+    result = numpy.zeros((data.shape[0],input_size),dtype=data.dtype)
+    result[:,:data.shape[1]] = data
+    return result
+        
+
+def resize(data, input_size, augment):
     # Resize and pad image while meeting stride-multiple constraints
-    shape = image.shape[:2]  # current shape [height, width]
+    shape = data.shape[1]  # длина данных
 
+    if shape < input_size:
+        return zero_pad(data, input_size), (0, shape)
     # Scale ratio (new / old)
-    r = min(input_size / shape[0], input_size / shape[1])
-    if not augment:  # only scale down, do not scale up (for better val mAP)
-        r = min(r, 1.0)
-
-    # Compute padding
-    pad = int(round(shape[1] * r)), int(round(shape[0] * r))
-    w = (input_size - pad[0]) / 2
-    h = (input_size - pad[1]) / 2
-
-    if shape[::-1] != pad:  # resize
-        image = cv2.resize(image,
-                           dsize=pad,
-                           interpolation=resample() if augment else cv2.INTER_LINEAR)
-    top, bottom = int(round(h - 0.1)), int(round(h + 0.1))
-    left, right = int(round(w - 0.1)), int(round(w + 0.1))
-    image = cv2.copyMakeBorder(image, top, bottom, left, right, cv2.BORDER_CONSTANT)  # add border
-    return image, (r, r), (w, h)
+    r = input_size / shape
+    # if not augment:  # only scale down, do not scale up (for better val mAP)
+    return interp(data, input_size), (0, input_size)
+    # тут не придумал что делать
+    diff = shape - input_size
+    begin = numpy.random.randint(0, diff)
+    end = numpy.random.randint(begin + input_size, shape)
+    return interp(data[:,begin:end], input_size), (begin, end - begin)
 
 
 def candidates(box1, box2):
