@@ -156,8 +156,8 @@ def non_max_suppression(outputs, confidence_threshold=0.001, iou_threshold=0.65)
         boxes, scores = x[:, :2] + c, x[:, 2]  # boxes, scores
         # Далее хочу из 1d bbox сделать 2d bbox, для этого сделаю всем одинаковый низ и верх
         nboxes = boxes.shape[0]
-        y1 = torch.zeros((nboxes, 1)).cuda()  # [N, 1]
-        y2 = torch.ones((nboxes, 1)).cuda()   # [N, 1]
+        y1 = torch.zeros((nboxes, 1)).to(boxes.device)  # [N, 1]
+        y2 = torch.ones((nboxes, 1)).to(boxes.device)   # [N, 1]
         # Объединяем в [x1, y1, x2, y2]
         boxes = torch.cat([boxes[:, 0:1], y1, boxes[:, 1:2], y2], dim=1)
 

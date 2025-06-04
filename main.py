@@ -21,7 +21,8 @@ data_dir = '../Dataset/COCO'
 def train(args, params):
     
     # load dataset
-    dataset = Dataset(args["dataset"], args["input_size"], params, augment=True)
+    train_dataset = Dataset(args["dataset"], args["input_size"], params, augment=True)
+    val_dataset = Dataset(args["dataset"], args["input_size"], params, augment=False, is_test=True)
     
     os.makedirs(os.path.join(os.getcwd(), args["project"]), exist_ok=True)
     logger_path =  os.path.join(os.getcwd(), args["project"] + '/step.csv')
@@ -29,7 +30,7 @@ def train(args, params):
     last_path = os.path.join(os.getcwd(), args["project"] + '/last.pt')
     
     # Model
-    model = nn.YOLO(num_classes=len(dataset.class_names))# nn.yolo_v11_n(len(params['names']))
+    model = nn.YOLO(num_classes=len(train_dataset.class_names))# nn.yolo_v11_n(len(params['names']))
     model.cuda()
 
     # Optimizer
@@ -45,13 +46,16 @@ def train(args, params):
     sampler = None
 
     if args["distributed"]:
-        sampler = data.distributed.DistributedSampler(dataset)
+        sampler = data.distributed.DistributedSampler(train_dataset)
 
-    loader = data.DataLoader(dataset, args["batch_size"], sampler is None, sampler,
-                             num_workers=8, pin_memory=True, collate_fn=Dataset.collate_fn)
+    train_loader = data.DataLoader(train_dataset, args["batch_size"], sampler is None, sampler,
+                            num_workers=8, pin_memory=True, collate_fn=Dataset.collate_fn)
+    
+    val_loader = data.DataLoader(val_dataset, args["batch_size"], shuffle=False,
+                            num_workers=4, pin_memory=True, collate_fn=Dataset.collate_fn)
 
     # Scheduler
-    num_steps = len(loader)
+    num_steps = len(train_loader)
     scheduler = util.LinearLR(args, params, num_steps)
 
     if args["distributed"]:
@@ -77,9 +81,9 @@ def train(args, params):
             if args["distributed"]:
                 sampler.set_epoch(epoch)
             if args["epochs"] - epoch == 10:
-                loader.dataset.mosaic = False
+                train_loader.dataset.mosaic = False
 
-            p_bar = enumerate(loader)
+            p_bar = enumerate(train_loader)
 
             if args["local_rank"] == 0:
                 print(('\n' + '%10s' * 5) % ('epoch', 'memory', 'box', 'cls', 'dfl'))
@@ -167,10 +171,11 @@ def train(args, params):
 
 
 @torch.no_grad()
-def test(args, params, model=None):
+def test(args, params, model=None, loader = None):
     
-    dataset = Dataset(args["dataset"], args["input_size"], params, augment=False,is_test=True)
-    loader = data.DataLoader(dataset, batch_size=40, shuffle=False, num_workers=4,
+    if loader is None:
+        dataset = Dataset(args["dataset"], args["input_size"], params, augment=False,is_test=True)
+        loader = data.DataLoader(dataset, batch_size=40, shuffle=False, num_workers=4,
                              pin_memory=True, collate_fn=Dataset.collate_fn)
 
     plot = False
@@ -233,7 +238,7 @@ def test(args, params, model=None):
     # Print results
     print(('%10s' + '%10.3g' * 4) % ('', m_pre, m_rec, map50, mean_ap))
     # Return results
-    model.float()  # for training
+    # model.float()  # for training
     return mean_ap, map50, m_rec, m_pre
 
 
