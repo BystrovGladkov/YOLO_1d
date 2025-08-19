@@ -110,7 +110,7 @@ class Dataset(data.Dataset):
     
     def __getitem__(self, index):
         """
-            Релизация метода для получения обьекта из датасета
+            Реализация метода для получения объекта из датасета
             Важно:
             Наши данные - 50000
             Сеть принимает 49152=(2^16)*3
@@ -186,7 +186,7 @@ class Dataset(data.Dataset):
 
 
 def wh2xy(x, w=49152):
-    # from [x, w] normalized to [x1, x2]
+    """ from [x, w] normalized to [x1, x2]"""
     y = numpy.copy(x)
     y[:, 0] = w * (x[:, 0] - x[:, 1] / 2) # left
     y[:, 1] = w * (x[:, 0] + x[:, 1] / 2) # right
@@ -194,6 +194,7 @@ def wh2xy(x, w=49152):
 
 
 def xy2wh(x, w):
+    """from [x1, x2] to [x, w]"""
     # warning: inplace clip
     x[:, [0, 1]] = x[:, [0, 1]].clip(0, w - 1E-3)  # x1, x2
     
@@ -201,7 +202,7 @@ def xy2wh(x, w):
     # from [x1, x2] to [x, w]
     y = numpy.copy(x)
     y[:, 0] = ((x[:, 0] + x[:, 1]) / 2) / w  # center
-    y[:, 1] = ((x[:, 1] - x[:, 0]) / 2) / w  # width
+    y[:, 1] = (x[:, 1] - x[:, 0]) / w  # width
     return y
 
 
@@ -232,6 +233,7 @@ def augment_hsv(image, params):
     cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR, dst=image)  # no return needed
 
 def interp(data: numpy.ndarray, input_size):
+    """Интерполяция данных до указанного размера по количеству столбцов"""
     original_indices = numpy.linspace(0, 1, data.shape[-1])
     new_indices = numpy.linspace(0, 1, input_size)
 
@@ -239,6 +241,7 @@ def interp(data: numpy.ndarray, input_size):
     return numpy.array([numpy.interp(new_indices, original_indices, d) for d in data])
 
 def zero_pad(data: numpy.ndarray, input_size):
+    """Дополнение матрицы нулями до указанного размера по количеству столбцов"""
     if data.shape[1] >= input_size:
         return data
     result = numpy.zeros((data.shape[0],input_size),dtype=data.dtype)
@@ -247,16 +250,18 @@ def zero_pad(data: numpy.ndarray, input_size):
         
 
 def resize(data, input_size, augment):
-    # Resize and pad image while meeting stride-multiple constraints
+    """Изменение размера матрицы до размера input_size"""
+    const_size = 50000
+    
     shape = data.shape[1]  # длина данных
-
-    if shape < input_size:
-        return zero_pad(data, input_size), (0, shape)
-    # Scale ratio (new / old)
-    r = input_size / shape
-    # if not augment:  # only scale down, do not scale up (for better val mAP)
-    return interp(data, input_size), (0, input_size)
-    # тут не придумал что делать
+    # Дополняем нулями до 50 метров
+    if shape < const_size:
+        data = zero_pad(data, const_size)
+    # коэффициент сжатия данных
+    r = input_size / const_size
+    # Интерполяция до желаемого размера
+    return interp(data, input_size), (0, shape * r)
+    # Можео попробовать сделать случайную обрезку
     diff = shape - input_size
     begin = numpy.random.randint(0, diff)
     end = numpy.random.randint(begin + input_size, shape)

@@ -30,7 +30,8 @@ def train(args, params):
     last_path = os.path.join(os.getcwd(), args["project"] + '/last.pt')
     
     # Model
-    model = nn.YOLO(num_classes=len(train_dataset.class_names))# nn.yolo_v11_n(len(params['names']))
+    # model = nn.YOLO(num_classes=len(train_dataset.class_names))# 
+    model = nn.yolo_v11_n(len(params['names']))
     model.cuda()
 
     # Optimizer

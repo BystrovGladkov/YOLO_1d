@@ -165,21 +165,21 @@ class DarkNet(torch.nn.Module):
 
         # p1/2
         # 50000
-        self.p1.append(Conv(15, 32, torch.nn.SiLU(), 3, 2, 1))      # 24576, 3
-        self.p1.append(Conv(32, 64, torch.nn.SiLU(), 3, 2, 1))      # 12288, 7
-        self.p1.append(Conv(64, 128, torch.nn.SiLU(), 3, 2, 1))     # 6144, 19
-        self.p1.append(CSP(128, 128, 1, True, r=2))                               # 6144, ? 40
-        self.p1.append(Conv(128, 256, torch.nn.SiLU(), 3, 2, 1))    # 3072  ? 80
-        self.p1.append(Conv(256, 256, torch.nn.SiLU(), 3, 2, 1))    # 1536  ? 200
-        self.p1.append(CSP(256, 256, 1, True, r=2))                               # 1536  ? 300 
+        self.p1.append(Conv(15, width[0], torch.nn.SiLU(), 3, 2, 1))      # 24576, 3
+        self.p1.append(Conv(width[0], width[1], torch.nn.SiLU(), 3, 2, 1))      # 12288, 7
+        self.p1.append(Conv(width[1], width[2], torch.nn.SiLU(), 3, 2, 1))     # 6144, 19
+        self.p1.append(CSP( width[2], width[2], depth[0], csp[0], r=2))                               # 6144, ? 40
+        self.p1.append(Conv(width[2], width[3], torch.nn.SiLU(), 3, 2, 1))    # 3072  ? 80
+        self.p1.append(Conv(width[3], width[4], torch.nn.SiLU(), 3, 2, 1))    # 1536  ? 200
+        self.p1.append(CSP( width[4], width[4], depth[1], csp[0], r=2))                               # 1536  ? 300 
         
         # p2/4
-        self.p2.append(Conv(256, 256, torch.nn.SiLU(), 3, 2, 1))    # 768, 700
-        self.p2.append(Conv(256, 256, torch.nn.SiLU(), 3, 2, 1))    # 384, 1500
-        self.p2.append(CSP(256, 256, 1, True, r=2))                               # 384, 3000
+        self.p2.append(Conv(width[4], width[5], torch.nn.SiLU(), 3, 2, 1))    # 768, 700
+        self.p2.append(Conv(width[5], width[6], torch.nn.SiLU(), 3, 2, 1))    # 384, 1500
+        self.p2.append(CSP( width[6], width[6], depth[2], csp[0], r=2))                               # 384, 3000
         # p3/8
-        self.p3.append(Conv(256, 256, torch.nn.SiLU(), 3, 2, 1))    # 195, 8000
-        self.p3.append(CSP(256, 256, 1, True, r=2))                               # 195, 12000
+        self.p3.append(Conv(width[6], width[7], torch.nn.SiLU(), 3, 2, 1))    # 195, 8000
+        self.p3.append(CSP( width[7], width[7], depth[3], csp[0], r=2))                               # 195, 12000
         # self.p3.append(SPP(width[5], width[5]))
         # self.p3.append(PSA(width[5], depth[4]))
 
@@ -199,17 +199,17 @@ class DarkFPN(torch.nn.Module):
         super().__init__()
         self.up1 = torch.nn.Upsample(scale_factor=2)
         self.up2 = torch.nn.Upsample(scale_factor=4)
-        self.h1 = CSP(512, 256, 1, False, r=2)
-        self.h2 = CSP(512, 256, 1, False, r=2)
-        self.h3 = nn.Sequential(Conv(256, 256, torch.nn.SiLU(), 3, 2, 1), 
-                                Conv(256, 256, torch.nn.SiLU(), 3, 2, 1))
-        self.h4 = CSP(512, 256, 1, False, r=2)
-        self.h5 = Conv(256, 256, torch.nn.SiLU(), k=3, s=2, p=1)
-        self.h6 = CSP(512, 256, 1, True, r=2)
+        self.h1 = CSP(width[6] + width[7], width[7], depth[4], csp[1], r=2)
+        self.h2 = CSP(width[4] + width[7], width[7], depth[5], csp[1], r=2)
+        self.h3 = nn.Sequential(Conv(width[7], width[7], torch.nn.SiLU(), 3, 2, 1), 
+                                Conv(width[7], width[7], torch.nn.SiLU(), 3, 2, 1))
+        self.h4 = CSP(width[7] * 2, width[7], depth[6], csp[1], r=2)
+        self.h5 = Conv(width[7], width[7], torch.nn.SiLU(), 3, 2, 1)
+        self.h6 = CSP(width[7] * 2, width[7], depth[7], csp[2], r=2)
 
     def forward(self, x):
         p3, p4, p5 = x
-        # print(x.shape)
+        
         p4 = self.h1(torch.cat(tensors=[self.up1(p5), p4], dim=1))
         
         p3 = self.h2(torch.cat(tensors=[self.up2(p4), p3], dim=1))
@@ -297,7 +297,7 @@ class YOLO(torch.nn.Module):
         self.fpn = DarkFPN(width, depth, csp)
 
         img_dummy = torch.zeros(1, 15, 49152)
-        self.head = Head(num_classes, (256, 256, 256))
+        self.head = Head(num_classes, (width[7], width[7], width[7]))
         self.head.stride = torch.tensor([49152 / x.shape[-1] for x in self.forward(img_dummy)])
         self.stride = self.head.stride
         self.head.initialize_biases()
@@ -319,9 +319,9 @@ class YOLO(torch.nn.Module):
 
 
 def yolo_v11_n(num_classes: int = 80):
-    csp = [False, True]
-    depth = [1, 1, 1, 1, 1, 1]
-    width = [3, 16, 32, 64, 128, 256]
+    csp = [False, False, True]
+    depth = [1, 1, 1, 1, 1, 1, 1, 1, 1]
+    width = [16, 32, 32, 64, 128, 128, 128, 128]
     return YOLO(width, depth, csp, num_classes)
 
 

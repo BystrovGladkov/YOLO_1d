@@ -3,7 +3,8 @@ from nets.nn import *
 from utils.dataset import *
 
 from utils import util
-from torchsummary import summary
+# from torchsummary import summary
+from torchinfo import summary
 
 import yaml
 
@@ -53,12 +54,15 @@ def test_use():
             plt.plot([x1,x1,x2,x2,x1],[y1,y2,y2,y1,y1])
     plt.show()
     
-    
+def test_summary():
+    model = yolo_v11_n(6)
+    print(summary(model, input_size=(100,15,49152)))
     
     
 
 if __name__ == "__main__":
-    test_use()
+    # test_use()
+    test_summary()
 if False:
     
     # d = yaml.safe_load(open(r"D:\dataset\flat_5level.yaml","r",encoding="utf-8"))
