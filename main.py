@@ -11,7 +11,7 @@ from torch.utils import data
 
 from nets import nn
 from utils import util
-from utils.dataset import Dataset
+from utils.dataset import Dataset, DatasetTorch
 
 warnings.filterwarnings("ignore")
 
@@ -21,8 +21,8 @@ data_dir = '../Dataset/COCO'
 def train(args, params):
     
     # load dataset
-    train_dataset = Dataset(args["dataset"], args["input_size"], params, augment=True)
-    val_dataset = Dataset(args["dataset"], args["input_size"], params, augment=False, is_test=True)
+    train_dataset = DatasetTorch(args["dataset"], args["input_size"], params, augment=True)
+    val_dataset = DatasetTorch(args["dataset"], args["input_size"], params, augment=False, is_test=True)
     
     os.makedirs(os.path.join(os.getcwd(), args["project"]), exist_ok=True)
     logger_path =  os.path.join(os.getcwd(), args["project"] + '/step.csv')
@@ -31,7 +31,7 @@ def train(args, params):
     
     # Model
     # model = nn.YOLO(num_classes=len(train_dataset.class_names))# 
-    model = nn.yolo_v11_n(len(params['names']))
+    model = nn.yolo_v11_n(len(train_dataset.class_names))
     model.cuda()
 
     # Optimizer
@@ -51,8 +51,8 @@ def train(args, params):
 
     train_loader = data.DataLoader(train_dataset, args["batch_size"], sampler is None, sampler,
                             num_workers=8, pin_memory=True, collate_fn=Dataset.collate_fn)
-    
-    val_loader = data.DataLoader(val_dataset, args["batch_size"], shuffle=False,
+    # поменял args["batch_size"] на 1
+    val_loader = data.DataLoader(val_dataset, 1, shuffle=False,
                             num_workers=4, pin_memory=True, collate_fn=Dataset.collate_fn)
 
     # Scheduler
@@ -140,7 +140,7 @@ def train(args, params):
 
             if args["local_rank"] == 0:
                 # mAP
-                last = test(args, params, ema.ema)
+                last = test(args, params, ema.ema, val_loader)
 
                 logger.writerow({'epoch': str(epoch + 1).zfill(3),
                                  'box': str(f'{avg_box_loss.avg:.3f}'),
@@ -175,7 +175,7 @@ def train(args, params):
 def test(args, params, model=None, loader = None):
     
     if loader is None:
-        dataset = Dataset(args["dataset"], args["input_size"], params, augment=False,is_test=True)
+        dataset = DatasetTorch(args["dataset"], args["input_size"], params, augment=False,is_test=True)
         loader = data.DataLoader(dataset, batch_size=40, shuffle=False, num_workers=4,
                              pin_memory=True, collate_fn=Dataset.collate_fn)
 
@@ -245,7 +245,7 @@ def test(args, params, model=None, loader = None):
 
 def profile(args, params):
     import thop
-    shape = (1, 15, args["input_size"])
+    shape = (1, 30, args["input_size"])
     model = nn.yolo_v11_n(len(params['names'])).fuse()
 
     model.eval()
@@ -261,12 +261,12 @@ def profile(args, params):
 
 config = {
     "input_size": 49152,
-    "batch_size": 30,
+    "batch_size": 50,
     "epochs": 50,
     "project": "fst_try",
     "train": True,
     "test": True,
-    "dataset": "D:/dataset/data_1d/dataset.yaml",
+    "dataset": "D:/dataset/data_1d/dataset/dataset.yaml",
     "local_rank": 0,
     "world_size": 1,
 }

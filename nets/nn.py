@@ -93,7 +93,7 @@ class SPP(torch.nn.Module):
         super().__init__()
         self.conv1 = Conv(in_ch, in_ch // 2, torch.nn.SiLU())
         self.conv2 = Conv(in_ch * 2, out_ch, torch.nn.SiLU())
-        self.res_m = torch.nn.MaxPool2d(k, stride=1, padding=k // 2)
+        self.res_m = torch.nn.MaxPool1d(k, stride=1, padding=k // 2)
 
     def forward(self, x):
         x = self.conv1(x)
@@ -117,17 +117,17 @@ class Attention(torch.nn.Module):
         self.conv2 = Conv(ch, ch, torch.nn.Identity())
 
     def forward(self, x):
-        b, c, h, w = x.shape
+        b, c, l = x.shape
 
         qkv = self.qkv(x)
-        qkv = qkv.view(b, self.num_head, self.dim_key * 2 + self.dim_head, h * w)
+        qkv = qkv.view(b, self.num_head, self.dim_key * 2 + self.dim_head, l)
 
         q, k, v = qkv.split([self.dim_key, self.dim_key, self.dim_head], dim=2)
 
         attn = (q.transpose(-2, -1) @ k) * self.scale
         attn = attn.softmax(dim=-1)
 
-        x = (v @ attn.transpose(-2, -1)).view(b, c, h, w) + self.conv1(v.reshape(b, c, h, w))
+        x = (v @ attn.transpose(-2, -1)).view(b, c, l) + self.conv1(v.reshape(b, c, l))
         return self.conv2(x)
 
 
@@ -157,7 +157,7 @@ class PSA(torch.nn.Module):
 
 
 class DarkNet(torch.nn.Module):
-    def __init__(self, width, depth, csp):
+    def __init__(self, input_channels, width, depth, csp):
         super().__init__()
         self.p1 = []
         self.p2 = []
@@ -165,7 +165,7 @@ class DarkNet(torch.nn.Module):
 
         # p1/2
         # 50000
-        self.p1.append(Conv(15, width[0], torch.nn.SiLU(), 3, 2, 1))      # 24576, 3
+        self.p1.append(Conv(input_channels, width[0], torch.nn.SiLU(), 3, 2, 1))      # 24576, 3
         self.p1.append(Conv(width[0], width[1], torch.nn.SiLU(), 3, 2, 1))      # 12288, 7
         self.p1.append(Conv(width[1], width[2], torch.nn.SiLU(), 3, 2, 1))     # 6144, 19
         self.p1.append(CSP( width[2], width[2], depth[0], csp[0], r=2))                               # 6144, ? 40
@@ -180,8 +180,8 @@ class DarkNet(torch.nn.Module):
         # p3/8
         self.p3.append(Conv(width[6], width[7], torch.nn.SiLU(), 3, 2, 1))    # 195, 8000
         self.p3.append(CSP( width[7], width[7], depth[3], csp[0], r=2))                               # 195, 12000
-        # self.p3.append(SPP(width[5], width[5]))
-        # self.p3.append(PSA(width[5], depth[4]))
+        self.p3.append(SPP(width[7], width[7]))
+        self.p3.append(PSA(width[7], depth[4]))
 
         self.p1 = torch.nn.Sequential(*self.p1)
         self.p2 = torch.nn.Sequential(*self.p2)
@@ -291,12 +291,12 @@ class Head(torch.nn.Module):
 
 
 class YOLO(torch.nn.Module):
-    def __init__(self, width=None, depth=None, csp=None, num_classes=3):
+    def __init__(self, width=None, depth=None, csp=None, num_classes=3, input_channels=15):
         super().__init__()
-        self.net = DarkNet(width, depth, csp)
+        self.net = DarkNet(input_channels, width, depth, csp)
         self.fpn = DarkFPN(width, depth, csp)
 
-        img_dummy = torch.zeros(1, 15, 49152)
+        img_dummy = torch.zeros(1, input_channels, 49152)
         self.head = Head(num_classes, (width[7], width[7], width[7]))
         self.head.stride = torch.tensor([49152 / x.shape[-1] for x in self.forward(img_dummy)])
         self.stride = self.head.stride
@@ -321,8 +321,8 @@ class YOLO(torch.nn.Module):
 def yolo_v11_n(num_classes: int = 80):
     csp = [False, False, True]
     depth = [1, 1, 1, 1, 1, 1, 1, 1, 1]
-    width = [16, 32, 32, 64, 128, 128, 128, 128]
-    return YOLO(width, depth, csp, num_classes)
+    width = [32, 32, 32, 64, 128, 128, 128, 128]
+    return YOLO(width, depth, csp, num_classes, 30)
 
 
 def yolo_v11_t(num_classes: int = 80):

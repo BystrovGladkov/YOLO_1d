@@ -1,3 +1,4 @@
+from typing import Tuple
 import math
 import os
 import random
@@ -63,7 +64,7 @@ class Dataset(data.Dataset):
         # Загружаем кэш
         path = os.path.join(self.labels_path, "labels.cache")
         if os.path.exists(path):
-            self.labels = torch.load(path)
+            self.labels = torch.load(path, weights_only=False)
             return 
         # Не нашли кэш
         dict = {}
@@ -184,6 +185,49 @@ class Dataset(data.Dataset):
                    'idx': indices}
         return torch.stack(samples, dim=0), targets
 
+class DatasetTorch(Dataset):
+    
+    def load_image(self, i) -> Tuple[torch.Tensor, Tuple]:
+        with open(self.filenames[i], "rb") as f:
+            data = torch.load(f, map_location="cpu", weights_only=False)
+        return data.float(), data.size()
+    
+    def __getitem__(self, index) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+            Реализация метода для получения объекта из датасета
+            Важно:
+            Наши данные - 50000
+            Сеть принимает 49152=(2^16)*3
+            Можно просто взять интерполяцию, а можно взять случайный сдвиг и обрезку!
+            
+        """
+        index = self.indices[index]
+        
+        data, shape = self.load_image(index)
+        
+        # Resize
+        data, ratio = resize_tensor(data, self.input_size, self.augment)
+
+        label = self.labels[self.filenames[index]].copy()
+        if label.size:
+            label[:, 1:] = wh2xy(label[:, 1:], ratio[1])
+        # if self.augment:
+        #     image, label = random_perspective(image, label, self.params)
+
+        nl = len(label)  # number of labels
+        w = shape[-1]
+        cls = label[:, 0:1]
+        box = label[:, 1:3]
+        box = xy2wh(box, w)
+
+        target_cls = torch.zeros((nl, 1))
+        target_box = torch.zeros((nl, 2))
+        if nl:
+            target_cls = torch.from_numpy(cls)
+            target_box = torch.from_numpy(box)
+
+        return data, target_cls, target_box, torch.zeros(nl)
+    
 
 def wh2xy(x, w=49152):
     """ from [x, w] normalized to [x1, x2]"""
@@ -191,7 +235,6 @@ def wh2xy(x, w=49152):
     y[:, 0] = w * (x[:, 0] - x[:, 1] / 2) # left
     y[:, 1] = w * (x[:, 0] + x[:, 1] / 2) # right
     return y
-
 
 def xy2wh(x, w):
     """from [x1, x2] to [x, w]"""
@@ -205,7 +248,6 @@ def xy2wh(x, w):
     y[:, 1] = (x[:, 1] - x[:, 0]) / w  # width
     return y
 
-
 def resample():
     choices = (cv2.INTER_AREA,
                cv2.INTER_CUBIC,
@@ -213,7 +255,6 @@ def resample():
                cv2.INTER_NEAREST,
                cv2.INTER_LANCZOS4)
     return random.choice(seq=choices)
-
 
 def augment_hsv(image, params):
     # HSV color-space augmentation
@@ -232,13 +273,18 @@ def augment_hsv(image, params):
     hsv = cv2.merge((cv2.LUT(h, lut_h), cv2.LUT(s, lut_s), cv2.LUT(v, lut_v)))
     cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR, dst=image)  # no return needed
 
-def interp(data: numpy.ndarray, input_size):
+def interpolate(data: numpy.ndarray, input_size):
     """Интерполяция данных до указанного размера по количеству столбцов"""
     original_indices = numpy.linspace(0, 1, data.shape[-1])
     new_indices = numpy.linspace(0, 1, input_size)
 
     # Линейная интерполяция
     return numpy.array([numpy.interp(new_indices, original_indices, d) for d in data])
+
+def interpolate_tensor(data: torch.Tensor, input_size) -> torch.Tensor:
+    """Интерполяция данных до указанного размера по количеству столбцов"""
+    # Линейная интерполяция
+    return torch.nn.functional.interpolate(data.unsqueeze(0), input_size, mode='linear').squeeze(0)
 
 def zero_pad(data: numpy.ndarray, input_size):
     """Дополнение матрицы нулями до указанного размера по количеству столбцов"""
@@ -247,26 +293,78 @@ def zero_pad(data: numpy.ndarray, input_size):
     result = numpy.zeros((data.shape[0],input_size),dtype=data.dtype)
     result[:,:data.shape[1]] = data
     return result
-        
 
-def resize(data, input_size, augment):
-    """Изменение размера матрицы до размера input_size"""
+def zero_pad_tensor(data: torch.Tensor, input_size):
+    """Дополнение матрицы нулями до указанного размера по количеству столбцов"""
+    if data.size(1) >= input_size:
+        return data
+    return torch.nn.functional.pad(
+        data, 
+        pad=(0,  input_size - data.size(1)),  # (padding_left, padding_right)
+        mode='constant', 
+        value=0
+    )
+
+
+
+
+def resize(data: torch.Tensor, input_size, augment) -> Tuple[torch.Tensor, Tuple[float, float], Tuple[float, float]]:
+    """ Изменение размера матрицы до размера input_size.
+        Результат тензор и две пары:\\
+        (begin1, end1) - отрезок данных, который отображёно в следующий интервал\\
+        (begin2, end2) - отрезок данных, в который были отображены данные
+    """
     const_size = 50000
+    # length of signal
+    length = data.size(1) 
+    if augment:    
+        # length difference for random resize
+        a = 0.1
+        # random resize
+        augment_length = length * numpy.random.uniform(1 - a, 1 + a)
+        data = interpolate_tensor(data, augment_length)
+        if augment_length <= input_size:
+            # if data fully fit
+            pos = numpy.random.randint(0, input_size - augment_length)
+            result = torch.tensor((data.size(0), input_size))
+            result[pos:augment_length] = data
+            return result, (0, length), (pos, pos + augment_length)
+        else:
+            # data is larger, need to crop
+            pos = numpy.random.randint(0, augment_length - input_size)
+            result = torch.tensor((data.size(0), input_size))
+            result[:] = data[pos: pos + input_size]
+            scale = length / augment_length
+            return result, (pos*scale, (pos+input_size) * scale), (0, input_size)
+    else:
+        
     
-    shape = data.shape[1]  # длина данных
     # Дополняем нулями до 50 метров
     if shape < const_size:
         data = zero_pad(data, const_size)
     # коэффициент сжатия данных
     r = input_size / const_size
-    # Интерполяция до желаемого размера
-    return interp(data, input_size), (0, shape * r)
-    # Можео попробовать сделать случайную обрезку
+    if not augment:
+        # Интерполяция до желаемого размера
+        return interpolate(data, input_size), (,), (0, shape * r)
+    # Можно сделать случайную обрезку для аугментации
     diff = shape - input_size
     begin = numpy.random.randint(0, diff)
     end = numpy.random.randint(begin + input_size, shape)
-    return interp(data[:,begin:end], input_size), (begin, end - begin)
+    return interpolate(data[:,begin:end], input_size), (begin, end - begin)
 
+def resize_tensor(data, input_size, augment):
+    """Изменение размера матрицы до размера input_size"""
+    const_size = 50000
+    
+    shape = data.size(1)  # длина данных
+    # Дополняем нулями до 50 метров
+    if shape < const_size:
+        data = zero_pad_tensor(data, const_size)
+    # коэффициент сжатия данных
+    r = input_size / const_size
+    # Интерполяция до желаемого размера
+    return interpolate_tensor(data, input_size), (0, shape * r)
 
 def candidates(box1, box2):
     # box1(4,n), box2(4,n)
