@@ -327,8 +327,8 @@ def compute_iou(box1, box2, eps=1e-7):
 
 
 def strip_optimizer(filename):
-    x = torch.load(filename, map_location="cpu")
-    x['model'].half()  # to FP16
+    x = torch.load(filename, map_location="cpu", weights_only=False)
+    # x['model'].half()  # to FP16
     for p in x['model'].parameters():
         p.requires_grad = False
     torch.save(x, f=filename)

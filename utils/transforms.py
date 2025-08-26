@@ -72,7 +72,7 @@ class RandomResize(Module):
         """
         length = signals.size(1) 
         # random resize
-        augment_length = length * np.random.uniform(1 - self.coef, 1 + self.coef)
+        augment_length = int(length * np.random.uniform(1 - self.coef, 1 + self.coef))
         signals = torch.nn.functional.interpolate(signals.unsqueeze(0), augment_length, mode='linear').squeeze(0)
         return signals, bboxes, labels
     
@@ -117,7 +117,7 @@ class RandomCrop(Module):
             pos = np.random.randint(0, self.length - length)
             # tensor with zeros
             result = torch.zeros((signals.size(0), self.length), dtype=signals.dtype)
-            result[:, pos:length] = signals
+            result[:, pos:pos+length] = signals
             scale = length / self.length
             # transform center
             bboxes[:, 0] = pos / self.length + bboxes[:, 0] * scale
@@ -151,15 +151,15 @@ class RandomReverse(Module):
     
     def __init__(self, p=0.5):
         """
-            Performs random reverse of signals with probability `p`.
+            Performs random reverse in time of signals with probability `p`.
         """
         super().__init__()
         self.p = p
 
     def forward(self, signals: torch.Tensor, bboxes: torch.Tensor, labels: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        if torch.bernoulli(self.p):
+        if np.random.uniform(0, 1) < self.p:
             bboxes[:,0] = 1 - bboxes[:,0]
-            signals = signals[:, ::-1]
+            signals = signals.flip(1)
         return signals, bboxes, labels
         
 class RandomInvert(Module):
@@ -172,7 +172,7 @@ class RandomInvert(Module):
         self.p = p
         
     def forward(self, signals: torch.Tensor, bboxes: torch.Tensor, labels: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        if torch.bernoulli(self.p):
+        if np.random.uniform(0, 1)<self.p:
             signals = -signals
         return signals, bboxes, labels
     
@@ -200,16 +200,18 @@ class TimeMasking(Module):
     
     def forward(self, signals: torch.Tensor, bboxes: torch.Tensor, labels: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         length = signals.size(1)
+        # generate size of erased area
         mask_length = np.random.randint(0, int(length*self.max_length))
+        # generate position of beginning of erased area
         pos = np.random.randint(0, length - mask_length)
         # set part of signals to zero
         signals[:, pos:pos+mask_length] = 0
         # begin and end of erased elements
-        begin, end = pos / length, (pos+mask_length) / length
+        begin, end = torch.tensor(pos / length), torch.tensor((pos+mask_length) / length)
         # left and right corners of boxes
         x1, x2 = bboxes[:,0] - bboxes[:,0]/2, bboxes[:,0] + bboxes[:,0]/2
-        # part of box that was erased
-        iou =  (x2.fmin(end) - x1.fmax(begin)).clip_(min=0) / (x2.fmax(end) - x1.fmin(begin))
+        # part of box that was erased, not exactly IoU
+        iou =  (x2.fmin(end) - x1.fmax(begin)).clip_(min=0) / (x2 - x1)
         # keep that labels 
         mask = iou < 0.4
         bboxes = bboxes[mask]
@@ -226,19 +228,30 @@ class ChannelMasking(Module):
         self.p = p
     
     def forward(self, signals: torch.Tensor, bboxes: torch.Tensor, labels: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        bernoulli_tensor = torch.bernoulli(torch.full((signals.size(0)), p=self.p, dtype=torch.bool))
+        bernoulli_tensor = torch.bernoulli(torch.full(size=(signals.size(0),), fill_value=self.p)).bool()
         signals[bernoulli_tensor, :] = 0
         return signals, bboxes, labels
     
+# class ChannelScaling(Module):
+    
+#     def __init__(self, sigma):
+#         """
+#             Applies random scale to each channel.
 
+#             Scale is generated from log-normal distribution log(N(0,sigma^2))
+#         """
+#         super().__init__()
+#         self.sigma = sigma
+        
+#     def forward(self, signals: torch.Tensor, bboxes: torch.Tensor, labels: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+#         scale = 
+        
+        
+
+# TODO:
 # масштабирование сигнала
-
 # масштабирование сигнала поэлементно с некоторым шумом
-
 # Импульсный шум, прямоугольный шум
-
 # Варианты с инъекцией сильного шума в чистые места, без отметок
-
 # Применять разные деформации непосредственно к отметкам, растягивать их, увеличивать амплитуды. К примеру умножить на гауссиан, соответствующей ширины
-
 # Добавить шум в фазовый спектр

@@ -8,10 +8,13 @@ import torch
 import tqdm
 import yaml
 from torch.utils import data
+from torchvision.transforms.v2 import Compose
 
 from nets import nn
 from utils import util
-from utils.dataset import Dataset, DatasetTorch
+from utils.dataset import Dataset
+from utils.logging import Logger
+import utils.transforms as transforms
 
 warnings.filterwarnings("ignore")
 
@@ -19,10 +22,30 @@ data_dir = '../Dataset/COCO'
 
 
 def train(args, params):
+    # length on one signal sample
+    REGULAR_LENGTH = 50000
+    # length of network input
+    INPUT_LENGTH = 49152
+    
+    
+    train_transform = Compose(
+        [transforms.RandomResize(0.1),
+        transforms.RandomJitter(0.2),
+        transforms.TimeMasking(0.2),
+        transforms.RandomCrop(INPUT_LENGTH),
+        transforms.RandomInvert(0.5),
+        transforms.RandomReverse(0.5),
+        transforms.ChannelMasking(0.1),]
+    )
+    test_transform = Compose(
+        [transforms.Padding(REGULAR_LENGTH),
+        transforms.Resize(INPUT_LENGTH),]
+    )
+    
     
     # load dataset
-    train_dataset = DatasetTorch(args["dataset"], args["input_size"], params, augment=True)
-    val_dataset = DatasetTorch(args["dataset"], args["input_size"], params, augment=False, is_test=True)
+    train_dataset = Dataset(args["dataset"], args["input_size"], params, transform=train_transform)
+    val_dataset = Dataset(args["dataset"], args["input_size"], params, transform=test_transform)
     
     os.makedirs(os.path.join(os.getcwd(), args["project"]), exist_ok=True)
     logger_path =  os.path.join(os.getcwd(), args["project"] + '/step.csv')
@@ -304,4 +327,5 @@ def main():
 
 
 if __name__ == "__main__":
+    Logger.add_console_handler()
     main()
