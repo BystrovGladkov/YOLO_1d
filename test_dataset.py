@@ -12,15 +12,23 @@ if __name__ == "__main__":
     INPUT_LENGTH = 49152
     
     
-    train_transform = Compose(
-        [transforms.RandomResize(0.1),
-        transforms.RandomJitter(0.2),
+    train_transform = Compose([
+        transforms.MarkScaling(300),    
+        transforms.RandomResize(0.1),
+        transforms.RandomJitter(0.6),
         transforms.TimeMasking(0.2),
         transforms.RandomCrop(INPUT_LENGTH),
         transforms.RandomInvert(0.5),
         transforms.RandomReverse(0.5),
-        transforms.ChannelMasking(0.1),]
-    )
+        transforms.ChannelScaling(),
+        transforms.ChannelMasking(0.1),
+        ])
+    train_transform = Compose([
+        transforms.MarkScaling(300),    
+        transforms.Padding(REGULAR_LENGTH),
+        transforms.Resize(INPUT_LENGTH),
+        ])
+    
     test_transform = Compose(
         [transforms.Padding(REGULAR_LENGTH),
         transforms.Resize(INPUT_LENGTH),]

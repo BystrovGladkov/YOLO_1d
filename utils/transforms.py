@@ -14,7 +14,7 @@ class Padding(Module):
         
     def forward(self, signals: torch.Tensor, bboxes: torch.Tensor, labels: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         length = signals.size(1)
-        result = torch.zeros((signals.size(0), self.length))
+        result = torch.zeros((signals.size(0), self.length), dtype=signals.dtype)
         result[:,:length] = signals[:, :]
         scale = length / self.length
         bboxes *= scale
@@ -111,6 +111,10 @@ class RandomCrop(Module):
                 ,
         """
         length = signals.size(1)
+        if length == self.length:
+            # copping/padding is not needed
+            return signals, bboxes, labels
+
         if  length <= self.length:
             # data is shorter, need padding
             # generate random position
@@ -129,17 +133,17 @@ class RandomCrop(Module):
             pos = np.random.randint(0, length - self.length)
             result = torch.zeros((signals.size(0), self.length))
             # crop signals
-            result[:, :] = signals[pos: pos + self.length]
+            result[:, :] = signals[:, pos: pos + self.length]
             # left and right corners of bboxes
             x1, x2 = bboxes[:, 0] - bboxes[:, 1]/2, bboxes[:, 0] + bboxes[:, 1]/2
             # left and right corners of cropped image
-            begin, end = pos / length, (pos + self.length) / length
+            begin, end = torch.tensor(pos / length), torch.tensor((pos + self.length) / length)
             # crop boxes
             x1 = torch.fmax(x1, begin)
             x2 = torch.fmin(x2, end)
             # mask of boxes that fit the cropped part of image
             mask = x1 < x2
-            bboxes = torch.tensor((torch.sum(mask), 2) ,dtype=bboxes.dtype)
+            bboxes = torch.zeros(size=(torch.sum(mask), 2) ,dtype=bboxes.dtype)
             # convert boxes back to (center, width) and scale
             scale = length / self.length
             bboxes[:, 0] = ((x1[mask] + x2[mask])/2 - pos) * scale
@@ -232,25 +236,66 @@ class ChannelMasking(Module):
         signals[bernoulli_tensor, :] = 0
         return signals, bboxes, labels
     
-# class ChannelScaling(Module):
+class ChannelScaling(Module):
     
-#     def __init__(self, sigma):
-#         """
-#             Applies random scale to each channel.
+    def __init__(self, sigma=0.4):
+        """
+            Applies random scale to each channel.
 
-#             Scale is generated from log-normal distribution log(N(0,sigma^2))
-#         """
-#         super().__init__()
-#         self.sigma = sigma
+            Scale is generated from log-normal distribution:
+            
+            scale ~ Lognormal(0, `sigma`^2).
+            
+            sigma = 0.4 gives values in interval [0.3, 3.32] with probability 0.997.
+        """
+        super().__init__()
+        self.sigma = sigma
         
-#     def forward(self, signals: torch.Tensor, bboxes: torch.Tensor, labels: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-#         scale = 
+    def forward(self, signals: torch.Tensor, bboxes: torch.Tensor, labels: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        scale = np.random.lognormal(0, self.sigma, size=signals.size(0))
+        scale = torch.tensor(scale).view(signals.size(0), -1)
+        signals *= scale
+        return signals, bboxes, labels
         
+class MarkScaling(Module):
+    
+    def __init__(self, max_length, sigma=0.6):
+        """
+            Applies scaling to boxes whose size does not exceed `max_size`.
+            
+            scale ~ Lognormal(0, `sigma`^2).
+            
+            
+            
+        """
+        super().__init__()
+        self.max_length = max_length
+        self.sigma = sigma
+    
+    def forward(self, signals: torch.Tensor, bboxes: torch.Tensor, labels: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        from scipy.signal.windows import hann
         
+        signal_length = signals.shape[1]
+        for box in bboxes:
+            # compute size of box
+            begin, end = box[0] - box[1]/2, box[0] + box[1]/2
+            begin, end = int(begin * signal_length), int(end * signal_length)
+            begin = max(begin,0)
+            end = min(end, signal_length)
+            box_length = end - begin
+            if box_length > self.max_length:
+                continue   # skip big boxes
+            # window for continuous scaling 
+            window = torch.tensor(hann(box_length), dtype=signals.dtype)
+            # generate gandom scale
+            scale = np.random.lognormal(0, self.sigma) - 1
+            # scaling on box
+            signals[:, begin:end] += scale * window * signals[:, begin:end]
+        return signals, bboxes, labels
+    
+      
 
 # TODO:
-# масштабирование сигнала
-# масштабирование сигнала поэлементно с некоторым шумом
 # Импульсный шум, прямоугольный шум
 # Варианты с инъекцией сильного шума в чистые места, без отметок
 # Применять разные деформации непосредственно к отметкам, растягивать их, увеличивать амплитуды. К примеру умножить на гауссиан, соответствующей ширины

@@ -247,6 +247,7 @@ class Head(torch.nn.Module):
         self.nl = len(filters)  # number of detection layers
         self.no = nc + self.ch * 2  # number of outputs per anchor
         self.stride = torch.zeros(self.nl)  # strides computed during build
+        self.validate = False
 
         box = max(64, filters[0] // 4)
         cls = max(80, filters[0], self.nc)
@@ -270,15 +271,17 @@ class Head(torch.nn.Module):
             return x
 
         self.anchors, self.strides = (i.transpose(0, 1) for i in make_anchors(x, self.stride))
-        x = torch.cat([i.view(x[0].shape[0], self.no, -1) for i in x], dim=2)
-        box, cls = x.split(split_size=(2 * self.ch, self.nc), dim=1)
+        y = torch.cat([i.view(x[0].shape[0], self.no, -1) for i in x], dim=2)
+        box, cls = y.split(split_size=(2 * self.ch, self.nc), dim=1)
 
         a, b = self.dfl(box).chunk(2, 1)
         a = self.anchors.unsqueeze(0) - a
         b = self.anchors.unsqueeze(0) + b
         box = torch.cat(tensors=((a + b) / 2, b - a), dim=1)
-
-        return torch.cat(tensors=(box * self.strides, cls.sigmoid()), dim=1)
+        
+        y = torch.cat(tensors=(box * self.strides, cls.sigmoid()), dim=1)
+        
+        return (x, y) if self.validate else y
 
     def initialize_biases(self):
         # Initialize biases
@@ -309,6 +312,10 @@ class YOLO(torch.nn.Module):
         x = self.fpn(x)
         return self.head(list(x))
 
+    def set_validate(self, value: bool):
+        """Sets model state to get raw (for loss computation) and decoded boxes (for metrics evaluation)."""
+        self.head.validate = value
+    
     def fuse(self):
         for m in self.modules():
             if type(m) is Conv and hasattr(m, 'norm'):

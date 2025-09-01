@@ -28,24 +28,26 @@ def train(args, params):
     INPUT_LENGTH = 49152
     
     
-    train_transform = Compose(
-        [transforms.RandomResize(0.1),
-        transforms.RandomJitter(0.2),
+    train_transform = Compose([
+        transforms.MarkScaling(300),
+        transforms.RandomResize(0.1),
+        transforms.RandomJitter(0.6),
         transforms.TimeMasking(0.2),
         transforms.RandomCrop(INPUT_LENGTH),
         transforms.RandomInvert(0.5),
         transforms.RandomReverse(0.5),
-        transforms.ChannelMasking(0.1),]
-    )
-    test_transform = Compose(
-        [transforms.Padding(REGULAR_LENGTH),
-        transforms.Resize(INPUT_LENGTH),]
-    )
+        transforms.ChannelScaling(),
+        transforms.ChannelMasking(0.1),
+        ])
+    test_transform = Compose([
+        transforms.Padding(REGULAR_LENGTH),
+        transforms.Resize(INPUT_LENGTH),
+        ])
     
     
     # load dataset
-    train_dataset = Dataset(args["dataset"], args["input_size"], params, transform=train_transform)
-    val_dataset = Dataset(args["dataset"], args["input_size"], params, transform=test_transform)
+    train_dataset = Dataset(args["dataset"], params, transform=train_transform, type="train")
+    val_dataset = Dataset(args["dataset"], params, transform=test_transform, type="val")
     
     os.makedirs(os.path.join(os.getcwd(), args["project"]), exist_ok=True)
     logger_path =  os.path.join(os.getcwd(), args["project"] + '/step.csv')
@@ -96,7 +98,8 @@ def train(args, params):
     with open(logger_path, 'w') as log:
         if args["local_rank"] == 0:
             logger = csv.DictWriter(log, fieldnames=['epoch',
-                                                     'box', 'cls', 'dfl',
+                                                     'box_train', 'cls_train', 'dfl_train',
+                                                     'box_val', 'cls_val', 'dfl_val',
                                                      'Recall', 'Precision', 'mAP@50', 'mAP'])
             logger.writeheader()
 
@@ -166,13 +169,16 @@ def train(args, params):
                 last = test(args, params, ema.ema, val_loader)
 
                 logger.writerow({'epoch': str(epoch + 1).zfill(3),
-                                 'box': str(f'{avg_box_loss.avg:.3f}'),
-                                 'cls': str(f'{avg_cls_loss.avg:.3f}'),
-                                 'dfl': str(f'{avg_dfl_loss.avg:.3f}'),
-                                 'mAP': str(f'{last[0]:.3f}'),
-                                 'mAP@50': str(f'{last[1]:.3f}'),
-                                 'Recall': str(f'{last[2]:.3f}'),
-                                 'Precision': str(f'{last[3]:.3f}')})
+                                 'box_train': str(f'{avg_box_loss.avg:.3f}'),
+                                 'cls_train': str(f'{avg_cls_loss.avg:.3f}'),
+                                 'dfl_train': str(f'{avg_dfl_loss.avg:.3f}'),
+                                 'box_val': str(f'{last[0]:.3f}'),
+                                 'cls_val': str(f'{last[1]:.3f}'),
+                                 'dfl_val': str(f'{last[2]:.3f}'),
+                                 'mAP': str(f'{last[3]:.3f}'),
+                                 'mAP@50': str(f'{last[4]:.3f}'),
+                                 'Recall': str(f'{last[5]:.3f}'),
+                                 'Precision': str(f'{last[6]:.3f}')})
                 log.flush()
 
                 # Update best mAP
@@ -196,23 +202,14 @@ def train(args, params):
 
 @torch.no_grad()
 def test(args, params, model=None, loader = None):
-    
-    if loader is None:
-        dataset = DatasetTorch(args["dataset"], args["input_size"], params, augment=False,is_test=True)
-        loader = data.DataLoader(dataset, batch_size=40, shuffle=False, num_workers=4,
-                             pin_memory=True, collate_fn=Dataset.collate_fn)
 
     plot = False
-    if not model:
-        plot = True
-        best_path = os.path.join(os.getcwd(), args["project"] + '/best.pt')
-        model = torch.load(f=best_path, map_location='cuda')
-        model = model['model'].float().fuse()
 
-    # model.half() # float16 don't work
     model.eval()
-    model = model.cuda()
-
+    model.set_validate(True)
+    # model = model.cuda()
+    criterion = util.ComputeLoss(model, params)
+    
     # Configure
     iou_v = torch.linspace(start=0.5, end=0.95, steps=10).cuda()  # iou vector for mAP@0.5:0.95
     n_iou = iou_v.numel()
@@ -223,6 +220,10 @@ def test(args, params, model=None, loader = None):
     mean_ap = 0
     metrics = []
     p_bar = tqdm.tqdm(loader, desc=('%10s' * 5) % ('', 'precision', 'recall', 'mAP50', 'mAP'))
+    # Sum of losses on validation 
+    avg_box_loss = util.AverageMeter()
+    avg_cls_loss = util.AverageMeter()
+    avg_dfl_loss = util.AverageMeter()
     for samples, targets in p_bar:
         samples = samples.cuda()
         # samples = samples.half()  # uint8 to fp16/32 # float16 don't work
@@ -230,7 +231,12 @@ def test(args, params, model=None, loader = None):
         _, _, w = samples.shape  # batch-size, channels, height, width
         scale = torch.tensor((w, w)).cuda()
         # Inference
-        outputs = model(samples)
+        raw, outputs = model(samples)
+        # Calculate loss
+        loss_box, loss_cls, loss_dfl = criterion(raw, targets)
+        avg_box_loss.update(loss_box.item(), samples.size(0))
+        avg_cls_loss.update(loss_cls.item(), samples.size(0))
+        avg_dfl_loss.update(loss_dfl.item(), samples.size(0))
         # NMS
         outputs = util.non_max_suppression(outputs)
         # Metrics
@@ -254,7 +260,7 @@ def test(args, params, model=None, loader = None):
                 metric = util.compute_metric(output[:, :4], target, iou_v)
             # Append
             metrics.append((metric, output[:, 2], output[:, 3], cls.squeeze(-1)))
-
+    model.set_validate(False)
     # Compute metrics
     metrics = [torch.cat(x, dim=0).cpu().numpy() for x in zip(*metrics)]  # to numpy
     if len(metrics) and metrics[0].any():
@@ -263,7 +269,7 @@ def test(args, params, model=None, loader = None):
     print(('%10s' + '%10.3g' * 4) % ('', m_pre, m_rec, map50, mean_ap))
     # Return results
     # model.float()  # for training
-    return mean_ap, map50, m_rec, m_pre
+    return avg_box_loss.avg, avg_cls_loss.avg, avg_dfl_loss.avg, mean_ap, map50, m_rec, m_pre
 
 
 def profile(args, params):
@@ -285,10 +291,10 @@ def profile(args, params):
 config = {
     "input_size": 49152,
     "batch_size": 50,
-    "epochs": 50,
-    "project": "fst_try",
+    "epochs": 300,
+    "project": "scnd_try",
     "train": True,
-    "test": True,
+    "test": False,
     "dataset": "D:/dataset/data_1d/dataset/dataset.yaml",
     "local_rank": 0,
     "world_size": 1,
@@ -317,8 +323,8 @@ def main():
 
     if args["train"]:
         train(args, params)
-    if args["test"]:
-        test(args, params, nn.YOLO(num_classes=3))
+    # if args["test"]:
+    #     test(args, params, nn.YOLO(num_classes=3))
 
     # Clean
     if args["distributed"]:
