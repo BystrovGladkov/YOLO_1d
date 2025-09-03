@@ -146,7 +146,7 @@ class RandomCrop(Module):
             bboxes = torch.zeros(size=(torch.sum(mask), 2) ,dtype=bboxes.dtype)
             # convert boxes back to (center, width) and scale
             scale = length / self.length
-            bboxes[:, 0] = ((x1[mask] + x2[mask])/2 - pos) * scale
+            bboxes[:, 0] = ((x1[mask] + x2[mask])/2 - pos/length) * scale
             bboxes[:, 1] = (x2[mask] - x1[mask]) * scale
             labels = labels[mask]
             return result, bboxes, labels
@@ -213,7 +213,7 @@ class TimeMasking(Module):
         # begin and end of erased elements
         begin, end = torch.tensor(pos / length), torch.tensor((pos+mask_length) / length)
         # left and right corners of boxes
-        x1, x2 = bboxes[:,0] - bboxes[:,0]/2, bboxes[:,0] + bboxes[:,0]/2
+        x1, x2 = bboxes[:,0] - bboxes[:,1]/2, bboxes[:,0] + bboxes[:,1]/2
         # part of box that was erased, not exactly IoU
         iou =  (x2.fmin(end) - x1.fmax(begin)).clip_(min=0) / (x2 - x1)
         # keep that labels 

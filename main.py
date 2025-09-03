@@ -46,7 +46,7 @@ def train(args, params):
     
     
     # load dataset
-    train_dataset = Dataset(args["dataset"], params, transform=train_transform, type="train")
+    train_dataset = Dataset(args["dataset"], params, transform=train_transform, type="train", mosaic=True)
     val_dataset = Dataset(args["dataset"], params, transform=test_transform, type="val")
     
     os.makedirs(os.path.join(os.getcwd(), args["project"]), exist_ok=True)
@@ -291,13 +291,13 @@ def profile(args, params):
 config = {
     "input_size": 49152,
     "batch_size": 50,
-    "epochs": 300,
+    "epochs": 150,
     "project": "scnd_try",
     "train": True,
     "test": False,
     "dataset": "D:/dataset/data_1d/dataset/dataset.yaml",
     "local_rank": 0,
-    "world_size": 1,
+    "world_size": 1
 }
 
 def main():

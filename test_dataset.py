@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from torchvision.transforms.v2 import Compose
 import utils.transforms as transforms
+import yaml
 
 if __name__ == "__main__":
     
@@ -10,6 +11,9 @@ if __name__ == "__main__":
     REGULAR_LENGTH = 50000
     # length of network input
     INPUT_LENGTH = 49152
+    
+    with open('utils/args.yaml', errors='ignore') as f:
+        params = yaml.safe_load(f)
     
     
     train_transform = Compose([
@@ -23,21 +27,21 @@ if __name__ == "__main__":
         transforms.ChannelScaling(),
         transforms.ChannelMasking(0.1),
         ])
-    train_transform = Compose([
-        transforms.MarkScaling(300),    
-        transforms.Padding(REGULAR_LENGTH),
-        transforms.Resize(INPUT_LENGTH),
-        ])
+    # train_transform = Compose([
+    #     transforms.MarkScaling(300),    
+    #     transforms.Padding(REGULAR_LENGTH),
+    #     transforms.Resize(INPUT_LENGTH),
+    #     ])
     
     test_transform = Compose(
         [transforms.Padding(REGULAR_LENGTH),
         transforms.Resize(INPUT_LENGTH),]
     )
     
-    d_train = Dataset("D:\dataset\data_1d\dataset\dataset.yaml", params=None, 
-                transform=train_transform, type="val")
+    d_train = Dataset("D:\dataset\data_1d\dataset\dataset.yaml", params=params, 
+                transform=train_transform, type="val", mosaic=True)
     
-    d_test = Dataset("D:\dataset\data_1d\dataset\dataset.yaml", params=None, 
+    d_test = Dataset("D:\dataset\data_1d\dataset\dataset.yaml", params=params, 
                 transform=test_transform, type="val")
     
     # print(d.filenames)

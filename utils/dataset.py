@@ -15,10 +15,11 @@ FORMATS = 'bmp', 'dng', 'jpeg', 'jpg', 'mpo', 'png', 'tif', 'tiff', 'webp'
 
 class Dataset(data.Dataset):
     
-    def __init__(self, filename, params, transform, type: Literal["train", "val", "test"]):
+    def __init__(self, filename, params, transform, type: Literal["train", "val", "test"], mosaic=False):
         super().__init__()
         self.transform = transform
         self.params = params
+        self.mosaic = mosaic
         self.filename = filename
         self.type = type
         # Загружаем конфигурацию датасета
@@ -116,15 +117,56 @@ class Dataset(data.Dataset):
             data = torch.load(f, map_location="cpu", weights_only=False)
         return data.float()
     
+    def load_mosaic(self, index):
+        # resulting labels
+        labels = []
+        # resulting signal
+        signals = []
+        # select second signal
+        indices = [index] + random.choices(self.indices, k=1)
+        # shuffle signals
+        random.shuffle(indices)
+        
+        length = []
+        for i, index in enumerate(indices):
+            signal = self.load_signal(index)
+            # save signal
+            signals.append(signal)
+            # save length of signal
+            length.append(signal.size(1))
+            # save labels
+            labels.append(self.labels[self.filenames[index]].copy())
+        
+        length = numpy.array(length)
+        full_length = length.sum()
+        offset = numpy.concatenate([[0], length.cumsum()[:-1]])
+        
+        for index in range(0, length.shape[0]):
+            # calculate a coefficient to convert labels
+            scale = length[index] / full_length
+            # calculate center of labels
+            labels[index][:, 1] = offset[index] / full_length + labels[index][:, 1] * scale
+            # calculate width of labels
+            labels[index][:, 2] = labels[index][:, 2] * scale
+            
+        labels = numpy.concatenate(labels, axis=0)
+        signals = torch.concat(signals, dim=1)
+        
+        return signals, labels
+    
     def __getitem__(self, index) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
             Extracts signal and labels from dataset.
         """
         index = self.indices[index]
-        # load signal
-        data = self.load_signal(index)
-        # load labels
-        label = self.labels[self.filenames[index]].copy()
+        
+        if self.mosaic and random.random() < self.params["mosaic"]:
+            data, label = self.load_mosaic(index)
+        else:
+            # load signal
+            data = self.load_signal(index)
+            # load labels
+            label = self.labels[self.filenames[index]].copy()
 
         nl = len(label)  # number of labels
         cls = label[:, 0:1]
@@ -160,6 +202,7 @@ class Dataset(data.Dataset):
                    'box': box,
                    'idx': indices}
         return torch.stack(samples, dim=0), targets
+
 
 
 def wh2xy(x, w=49152):
