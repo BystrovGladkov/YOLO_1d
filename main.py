@@ -18,8 +18,6 @@ import utils.transforms as transforms
 
 warnings.filterwarnings("ignore")
 
-data_dir = '../Dataset/COCO'
-
 
 def train(args, params):
     # length on one signal sample
@@ -56,8 +54,14 @@ def train(args, params):
     
     # Model
     # model = nn.YOLO(num_classes=len(train_dataset.class_names))# 
-    model = nn.yolo_v11_n(len(train_dataset.class_names))
+    model = nn.yolo_v11_m(len(train_dataset.class_names))
     model.cuda()
+    start_epoch = 0
+    
+    if os.path.exists(last_path):
+        checkpoint = torch.load(last_path, weights_only=False)
+        model.load_state_dict(checkpoint['model'], strict=False)
+        start_epoch = checkpoint['epoch']
 
     # Optimizer
     accumulate = max(round(64 / (args["batch_size"] * args["world_size"])), 1)
@@ -83,6 +87,7 @@ def train(args, params):
     # Scheduler
     num_steps = len(train_loader)
     scheduler = util.LinearLR(args, params, num_steps)
+    scheduler.step(start_epoch, optimizer)
 
     if args["distributed"]:
         # DDP mode
@@ -103,7 +108,7 @@ def train(args, params):
                                                      'Recall', 'Precision', 'mAP@50', 'mAP'])
             logger.writeheader()
 
-        for epoch in range(args["epochs"]):
+        for epoch in range(start_epoch, args["epochs"]):
             model.train()
             if args["distributed"]:
                 sampler.set_epoch(epoch)
@@ -182,22 +187,22 @@ def train(args, params):
                 log.flush()
 
                 # Update best mAP
-                if last[0] > best:
-                    best = last[0]
+                if last[3] > best:
+                    best = last[3]
 
                 # Save model
                 save = {'epoch': epoch + 1,
-                        'model': copy.deepcopy(ema.ema)}
+                        'model': ema.ema.state_dict()}
 
                 # Save last, best and delete
                 torch.save(save, f=last_path)
-                if best == last[0]:
+                if best == last[3]:
                     torch.save(save, f=best_path)
                 del save
 
-    if args["local_rank"] == 0:
-        util.strip_optimizer(best_path)  # strip optimizers
-        util.strip_optimizer(last_path)  # strip optimizers
+    # if args["local_rank"] == 0:
+    #     util.strip_optimizer(best_path)  # strip optimizers
+    #     util.strip_optimizer(last_path)  # strip optimizers
 
 
 @torch.no_grad()
@@ -292,7 +297,7 @@ config = {
     "input_size": 49152,
     "batch_size": 50,
     "epochs": 150,
-    "project": "scnd_try",
+    "project": "scnd_try_small",
     "train": True,
     "test": False,
     "dataset": "D:/dataset/data_1d/dataset/dataset.yaml",

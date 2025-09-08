@@ -15,11 +15,10 @@ FORMATS = 'bmp', 'dng', 'jpeg', 'jpg', 'mpo', 'png', 'tif', 'tiff', 'webp'
 
 class Dataset(data.Dataset):
     
-    def __init__(self, filename, params, transform, type: Literal["train", "val", "test"], mosaic=False):
+    def __init__(self, filename, transform, type: Literal["train", "val", "test"], mosaic_prob=0):
         super().__init__()
         self.transform = transform
-        self.params = params
-        self.mosaic = mosaic
+        self.mosaic_prob = mosaic_prob
         self.filename = filename
         self.type = type
         # Загружаем конфигурацию датасета
@@ -160,7 +159,7 @@ class Dataset(data.Dataset):
         """
         index = self.indices[index]
         
-        if self.mosaic and random.random() < self.params["mosaic"]:
+        if self.mosaic_prob and random.random() < self.mosaic_prob:
             data, label = self.load_mosaic(index)
         else:
             # load signal

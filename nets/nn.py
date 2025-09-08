@@ -332,36 +332,15 @@ def yolo_v11_n(num_classes: int = 80):
     return YOLO(width, depth, csp, num_classes, 30)
 
 
-def yolo_v11_t(num_classes: int = 80):
-    csp = [False, True]
-    depth = [1, 1, 1, 1, 1, 1]
-    width = [3, 24, 48, 96, 192, 384]
-    return YOLO(width, depth, csp, num_classes)
-
-
 def yolo_v11_s(num_classes: int = 80):
-    csp = [False, True]
-    depth = [1, 1, 1, 1, 1, 1]
-    width = [3, 32, 64, 128, 256, 512]
-    return YOLO(width, depth, csp, num_classes)
+    csp = [True, True, True]
+    depth = [1, 1, 1, 1, 1, 1, 1, 1, 1]
+    width = [32, 32, 64, 96, 128, 128, 192, 192]
+    return YOLO(width, depth, csp, num_classes, 30)
 
 
 def yolo_v11_m(num_classes: int = 80):
-    csp = [True, True]
-    depth = [1, 1, 1, 1, 1, 1]
-    width = [3, 64, 128, 256, 512, 512]
-    return YOLO(width, depth, csp, num_classes)
-
-
-def yolo_v11_l(num_classes: int = 80):
-    csp = [True, True]
-    depth = [2, 2, 2, 2, 2, 2]
-    width = [3, 64, 128, 256, 512, 512]
-    return YOLO(width, depth, csp, num_classes)
-
-
-def yolo_v11_x(num_classes: int = 80):
-    csp = [True, True]
-    depth = [2, 2, 2, 2, 2, 2]
-    width = [3, 96, 192, 384, 768, 768]
-    return YOLO(width, depth, csp, num_classes)
+    csp = [True, True, True]
+    depth = [1, 1, 1, 1, 1, 2, 2, 2, 2]
+    width = [32, 32, 64, 96, 128, 192, 192, 256]
+    return YOLO(width, depth, csp, num_classes, 30)

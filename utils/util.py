@@ -439,7 +439,7 @@ class EMA:
     For EMA details see https://www.tensorflow.org/api_docs/python/tf/train/ExponentialMovingAverage
     """
 
-    def __init__(self, model, decay=0.9999, tau=2000, updates=0):
+    def __init__(self, model:torch.nn.Module, decay:float=0.9999, tau:int=2000, updates:int=0):
         # Create EMA
         self.ema = copy.deepcopy(model).eval()  # FP32 EMA
         self.updates = updates  # number of EMA updates
@@ -448,7 +448,7 @@ class EMA:
         for p in self.ema.parameters():
             p.requires_grad_(False)
 
-    def update(self, model):
+    def update(self, model:torch.nn.Module):
         if hasattr(model, 'module'):
             model = model.module
         # Update EMA parameters
