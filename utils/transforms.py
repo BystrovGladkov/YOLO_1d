@@ -265,7 +265,7 @@ class MarkScaling(Module):
             
             scale ~ Lognormal(0, `sigma`^2).
             
-            
+            TODO: annotate
             
         """
         super().__init__()
@@ -293,11 +293,40 @@ class MarkScaling(Module):
             signals[:, begin:end] += scale * window * signals[:, begin:end]
         return signals, bboxes, labels
     
-      
+
+class PhaseSpectrumNoise(Module):
+    
+    def __init__(self, sigma:float = 0.5):
+        """
+            Adds noise in phase spectrum.
+            
+            Noise is from Normal distribution N(0,sigma^2).
+        """
+        super().__init__()
+        self.sigma = sigma
+        
+    def forward(self, signals: torch.Tensor, bboxes: torch.Tensor, labels: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        # calculate the spectrum
+        spectrum = torch.fft.rfft(signals, dim=-1)
+        # extract magnitude and phase
+        magnitude = torch.abs(spectrum)
+        angles = torch.angle(spectrum)
+        # add noise to phases
+        noise = torch.randn_like(angles) * self.sigma
+        angles += noise
+        # recover the spectrum
+        complex_phase = torch.cos(angles) + 1j * torch.sin(angles)
+        spectrum = magnitude * complex_phase
+        # recover the signal
+        signals = torch.fft.irfft(spectrum, dim=-1)
+        return signals, bboxes, labels
+        
+    
+
 
 # TODO:
 # Импульсный шум, прямоугольный шум
 # Варианты с инъекцией сильного шума в чистые места, без отметок
 # Применять разные деформации непосредственно к отметкам, растягивать их, увеличивать амплитуды. К примеру умножить на гауссиан, соответствующей ширины
-# Добавить шум в фазовый спектр
 # состязательные примеры. (адверсальные атаки)
+

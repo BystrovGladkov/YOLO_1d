@@ -3,34 +3,18 @@ from nets.nn import *
 from utils.dataset import *
 
 from utils import util
-# from torchsummary import summary
 from torchinfo import summary
+from nets.nn import yolo_v11_l
+from test_dataset import get_datasets
 
 import yaml
 
 import matplotlib.pyplot as plt
 
-def test_use():
-    best_path = os.path.join(os.getcwd(), 'fst_try/best.pt')
-    model = torch.load(f=best_path, map_location='cpu')
-    model = model['model'].float().fuse()
-    model.eval()
-    model.cpu()
-    print(model.stride)
-    
-    
-    data_np = numpy.frombuffer(open(r"D:\dataset\data_1d\data\val\artc352_right_179.bin","rb").read(),dtype=numpy.float32).reshape(15, -1)
-    # data_np = numpy.frombuffer(open(r"D:\dataset\data_1d\data\train\kiwi629_left_7.bin","rb").read(),dtype=numpy.float32).reshape(15, -1)
-    
-    
-    
-    
-    data = torch.from_numpy(data_np.copy())
-    data = data.float().cpu()
-    # ancors, stride = util.make_anchors(data, model.stride[2:3])
-    
-    # print(ancors)
-    # print(stride)
+
+
+def show_labels(model, data):
+    data_np = data.numpy()
     
     data = data.unsqueeze(0)
     
@@ -38,9 +22,9 @@ def test_use():
         outputs = model(data)
         outputs = util.non_max_suppression(outputs)
     scale = 6
-    plt.plot(data_np.T + scale * numpy.arange(0,15)[None,:])
-    y1 = -scale
-    y2 = 16 * scale
+    plt.plot(data_np.T + scale * numpy.arange(0,data_np.shape[0])[None,:])
+    y1 = -2*scale
+    y2 = (data_np.shape[0]+2) * scale
     print(outputs)
     
     for i, output in enumerate(outputs):
@@ -52,17 +36,43 @@ def test_use():
             x2 = box[1]
             print(box)
             plt.plot([x1,x1,x2,x2,x1],[y1,y2,y2,y1,y1])
+            plt.plot([(x1+x2)/2]*2,[y1,y2], lw=3)
+            plt.text(x1,y1, "")
     plt.show()
+
+def test_use():
+    best_path = os.path.join(os.getcwd(), 'runs/large2/best.pt')
+    chkpt = torch.load(f=best_path, map_location='cpu', weights_only=False)
+    model = yolo_v11_l(6)
+    model.load_state_dict(chkpt['ema']['ema_model_state_dict'])
+    model.float().fuse()
+    model.eval()
+    model.cpu()
+    # print(model.stride)
+    d_train, d_test = get_datasets()
+    
+    filaname = r"D:\dataset\data_1d\dataset\data\test\kiwi629_left_300.pt"
+    
+    with open(filaname, "rb") as f:
+        data = torch.load(f, map_location="cpu", weights_only=False)
+    
+    data = data.float().cpu()
+    # ancors, stride = util.make_anchors(data, model.stride[2:3])
+    
+    # print(ancors)
+    # print(stride)
+    
     
 def test_summary():
-    model = yolo_v11_n(6)
-    print(summary(model, input_size=(100,15,49152)))
-    
+    # model = yolo_v11_n(6)
+    model = yolo_v11_m(6)
+    print(summary(model, input_size=(100,30,49152), depth=3, verbose=2))
     
 
+
 if __name__ == "__main__":
-    # test_use()
-    test_summary()
+    test_use()
+    # test_summary()
 if False:
     
     # d = yaml.safe_load(open(r"D:\dataset\flat_5level.yaml","r",encoding="utf-8"))

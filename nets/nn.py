@@ -344,3 +344,10 @@ def yolo_v11_m(num_classes: int = 80):
     depth = [1, 1, 1, 1, 1, 2, 2, 2, 2]
     width = [32, 32, 64, 96, 128, 192, 192, 256]
     return YOLO(width, depth, csp, num_classes, 30)
+
+
+def yolo_v11_l(num_classes: int = 80):
+    csp = [True, True, True]
+    depth = [1, 1, 1, 1, 1, 2, 2, 2, 3]
+    width = [32, 64, 64, 96, 128, 192, 256, 512]
+    return YOLO(width, depth, csp, num_classes, 30)

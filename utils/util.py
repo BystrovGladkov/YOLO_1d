@@ -224,7 +224,7 @@ def plot_curve(px, py, names, save_dir, x_label="Confidence", y_label="Metric"):
     pyplot.close(figure)
 
 
-def compute_ap(tp, conf, output, target, plot=False, names=(), eps=1E-16):
+def compute_ap(tp, conf, output, target, plot=False, eps=1E-16):
     """
     Compute the average precision, given the recall and precision curves.
     Source: https://github.com/rafaelpadilla/Object-Detection-Metrics.
@@ -285,13 +285,13 @@ def compute_ap(tp, conf, output, target, plot=False, names=(), eps=1E-16):
 
     # Compute F1 (harmonic mean of precision and recall)
     f1 = 2 * p * r / (p + r + eps)
-    if plot:
-        names = dict(enumerate(names))  # to dict
-        names = [v for k, v in names.items() if k in unique_classes]  # list: only classes that have data
-        plot_pr_curve(px, py, ap, names, save_dir="./weights/PR_curve.png")
-        plot_curve(px, f1, names, save_dir="./weights/F1_curve.png", y_label="F1")
-        plot_curve(px, p, names, save_dir="./weights/P_curve.png", y_label="Precision")
-        plot_curve(px, r, names, save_dir="./weights/R_curve.png", y_label="Recall")
+    # if plot:
+    #     names = dict(enumerate(names))  # to dict
+    #     names = [v for k, v in names.items() if k in unique_classes]  # list: only classes that have data
+    #     plot_pr_curve(px, py, ap, names, save_dir="./weights/PR_curve.png")
+    #     plot_curve(px, f1, names, save_dir="./weights/F1_curve.png", y_label="F1")
+    #     plot_curve(px, p, names, save_dir="./weights/P_curve.png", y_label="Precision")
+    #     plot_curve(px, r, names, save_dir="./weights/R_curve.png", y_label="Recall")
     i = smooth(f1.mean(0), 0.1).argmax()  # max F1 index
     p, r, f1 = p[:, i], r[:, i], f1[:, i]
     tp = (r * nt).round()  # true positives
@@ -353,6 +353,10 @@ def load_weight(model, ckpt):
 
 
 def set_params(model, decay):
+    """
+        Sets a regularization for parameters. 
+        For bias and BatchNorm regularization is not used.
+    """
     p1 = []
     p2 = []
     norm = tuple(v for k, v in torch.nn.__dict__.items() if "Norm" in k)
@@ -415,12 +419,9 @@ class CosineLR:
 
 
 class LinearLR:
-    def __init__(self, args, params, num_steps):
-        max_lr = params['max_lr']
-        min_lr = params['min_lr']
-
-        warmup_steps = int(max(params['warmup_epochs'] * num_steps, 100))
-        decay_steps = int(args["epochs"] * num_steps - warmup_steps)
+    def __init__(self, min_lr:float, max_lr:float, warmup_epochs:int, epochs:int, num_steps:int):
+        warmup_steps = int(max(warmup_epochs * num_steps, 100))
+        decay_steps = int(epochs * num_steps - warmup_steps)
 
         warmup_lr = numpy.linspace(min_lr, max_lr, int(warmup_steps), endpoint=False)
         decay_lr = numpy.linspace(max_lr, min_lr, decay_steps)
@@ -444,7 +445,9 @@ class EMA:
         self.ema = copy.deepcopy(model).eval()  # FP32 EMA
         self.updates = updates  # number of EMA updates
         # decay exponential ramp (to help early epochs)
-        self.decay = lambda x: decay * (1 - math.exp(-x / tau))
+        self.tau = tau
+        self.decay = decay
+        self.weight_decay = lambda x: self.decay * (1 - math.exp(-x / self.tau))
         for p in self.ema.parameters():
             p.requires_grad_(False)
 
@@ -454,7 +457,7 @@ class EMA:
         # Update EMA parameters
         with torch.no_grad():
             self.updates += 1
-            d = self.decay(self.updates)
+            d = self.weight_decay(self.updates)
 
             msd = model.state_dict()  # model state_dict
             for k, v in self.ema.state_dict().items():
@@ -462,6 +465,21 @@ class EMA:
                     v *= d
                     v += (1 - d) * msd[k].detach()
 
+    def state_dict(self) -> dict:
+        return {
+            'updates': self.updates,
+            'decay': self.decay,
+            'tau': self.tau,
+            'ema_model_state_dict': self.ema.state_dict()
+        }
+
+    def load_state_dict(self, state_dict: dict):
+        self.updates = state_dict['updates']
+        self.decay = state_dict['decay']
+        self.tau = state_dict['tau']
+        self.weight_decay = lambda x: self.decay * (1 - math.exp(-x / self.tau))
+        self.ema.load_state_dict(state_dict['ema_model_state_dict'])
+    
 
 class AverageMeter:
     def __init__(self):
@@ -665,15 +683,17 @@ class BoxLoss(torch.nn.Module):
 
 
 class ComputeLoss:
-    def __init__(self, model, params):
+    def __init__(self, model, weight_box:float, weight_cls:float, weight_dfl:float):
         if hasattr(model, 'module'):
             model = model.module
 
         device = next(model.parameters()).device
 
         m = model.head  # Head() module
-
-        self.params = params
+        self.weight_box = weight_box
+        self.weight_cls = weight_cls
+        self.weight_dfl = weight_dfl
+        
         self.stride = m.stride
         self.nc = m.nc
         self.no = m.no
@@ -681,8 +701,9 @@ class ComputeLoss:
         self.device = device
 
         self.box_loss = BoxLoss(m.ch - 1).to(device)
+        # Classification loss with iou-aware scoring
         self.cls_loss = torch.nn.BCEWithLogitsLoss(reduction='none')
-        self.assigner = Assigner(nc=self.nc, top_k=10, alpha=0.5, beta=6.0)
+        self.assigner = Assigner(nc=self.nc, top_k=10, alpha=0.5, beta=4.0)
 
         self.project = torch.arange(m.ch, dtype=torch.float, device=device)
 
@@ -756,8 +777,47 @@ class ComputeLoss:
                                                target_scores,
                                                target_scores_sum, fg_mask)
 
-        loss_box *= self.params['box']  # box gain
-        loss_cls *= self.params['cls']  # cls gain
-        loss_dfl *= self.params['dfl']  # dfl gain
+        loss_box *= self.weight_box  # box gain
+        loss_cls *= self.weight_cls  # cls gain
+        loss_dfl *= self.weight_dfl  # dfl gain
 
         return loss_box, loss_cls, loss_dfl
+
+def get_adversal_examples(model:torch.nn.Module, criterion: ComputeLoss, grad_scaler:torch.amp.GradScaler,
+                          images: torch.Tensor, targets: torch.Tensor):
+    
+    # fraction of signals power to change
+    abs_scale = 0.3
+    power_scale = 0.1
+    # add gradient to images
+    images = images.clone().detach().requires_grad_(True)
+    
+    # turn off gradients
+    prev_requires = []
+    for p in model.parameters():
+        prev_requires.append(p.requires_grad)
+        p.requires_grad_(False)
+    # compute loss
+    with torch.amp.autocast('cuda'):
+        outputs = model(images)
+        loss_box, loss_cls, loss_dfl = criterion(outputs, targets)
+    
+    loss = (loss_box + loss_cls + loss_dfl)
+    # calculate gradient
+    grad_x = torch.autograd.grad(grad_scaler.scale(loss), images, retain_graph=False, create_graph=False)[0]
+    # calculate powers of signal and gradient
+    power = images.square().sum(dim=-1) / images.size(-1)
+    max_abs = images.abs().max(dim=-1).values
+    grad_power = grad_x.square().sum(dim=-1) / grad_x.size(-1)
+    grad_max_abs = grad_x.abs().max(dim=-1).values
+    # calculate a scale
+    scale = torch.min(power_scale * power / grad_power, abs_scale * max_abs / grad_max_abs)
+    # add gradient to images
+    # images = images + grad_x.sign() * images * scale # * scale[..., None]
+    images = images + grad_x * scale[..., None]
+    
+    # turn on_gradients
+    for p, r in zip(model.parameters(), prev_requires):
+        p.requires_grad_(r)
+        
+    return images.detach()

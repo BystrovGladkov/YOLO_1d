@@ -4,18 +4,20 @@ import numpy as np
 from torchvision.transforms.v2 import Compose
 import utils.transforms as transforms
 import yaml
+import torch
 
-if __name__ == "__main__":
-    
-    # length on one signal sample
-    REGULAR_LENGTH = 50000
-    # length of network input
-    INPUT_LENGTH = 49152
-    
-    with open('utils/args.yaml', errors='ignore') as f:
-        params = yaml.safe_load(f)
-    
-    
+from nets.nn import YOLO, yolo_v11_l
+from utils.util import ComputeLoss
+
+# length on one signal sample
+REGULAR_LENGTH = 50000
+# length of network input
+INPUT_LENGTH = 49152
+
+
+
+
+def get_datasets():
     train_transform = Compose([
         transforms.MarkScaling(300),    
         transforms.RandomResize(0.1),
@@ -37,32 +39,83 @@ if __name__ == "__main__":
         [transforms.Padding(REGULAR_LENGTH),
         transforms.Resize(INPUT_LENGTH),]
     )
+    train_transform = test_transform
     
-    d_train = Dataset("D:\dataset\data_1d\dataset\dataset.yaml", params=params, 
-                transform=train_transform, type="val", mosaic=True)
+    d_train = Dataset("D:\dataset\data_1d\dataset\dataset.yaml", 
+                transform=train_transform, type="val", mosaic_prob=0.0)
     
-    d_test = Dataset("D:\dataset\data_1d\dataset\dataset.yaml", params=params, 
-                transform=test_transform, type="val")
+    d_test = Dataset("D:\dataset\data_1d\dataset\dataset.yaml", 
+                transform=test_transform, type="val", mosaic_prob=0.0)
     
-    # print(d.filenames)
+    d_train = torch.utils.data.DataLoader(d_train, 1, shuffle=False, collate_fn=d_train.collate_fn)
+    d_test = torch.utils.data.DataLoader(d_test, 1, shuffle=False, collate_fn=d_train.collate_fn)
+    
+    return d_train, d_test
+    
+    
+def test_adversals():
+    
+    model = yolo_v11_l(6)
+    
+    check_path = "runs/large1/last.pt"
+    
+    
+    checkpoint = torch.load(check_path, weights_only=False)
+    model.load_state_dict(checkpoint['model'], strict=False)
+    
+    criterion = ComputeLoss(model, 7.5, 0.5, 1.1)
+    
+    d_train, d_test = get_datasets()
+    
     
     scale = 10
     y1,y2 = -scale*2, scale*32
-    
-    a = iter(d_train)
-    b = iter(d_test)
-    while(a and b):
+    for a, b in zip(d_train, d_test):
+    # while(d_train and d_test):
         fig, axes = plt.subplots(2,1)
-        for index, c in enumerate([a,b]):
-            train_d = next(c)
-            data = train_d[0]
+        for index, c in enumerate([a, b]):
+            # train_d = next(c)
+            
+            if index == 0:
+                data = get_adversals(model, criterion, c[0], c[1]).squeeze(0)
+            else:
+                data = c[0].squeeze(0)
             
             axes[index].plot(data.numpy().T + np.arange(data.shape[0])[None,:]*scale)
-            box = train_d[2]
-            x1 = (box[:,0] - box[:,1]/2)*INPUT_LENGTH
-            x2 = (box[:,0] + box[:,1]/2)*INPUT_LENGTH
             
-            for l,r in zip(x1,x2):
-                axes[index].plot([x1,x2,x2,x1,x1], [y1,y1,y2,y2,y1])
+            box = c[1]["box"]
+            x1 = (box[:,0] - box[:,1]/2) * INPUT_LENGTH
+            x2 = (box[:,0] + box[:,1]/2) * INPUT_LENGTH
+            
+            # for l, r in zip(x1,x2):
+            axes[index].plot([x1,x2,x2,x1,x1], [y1,y1,y2,y2,y1])
         
         plt.show()
+    
+
+if __name__ == "__main__":
+    
+    test_adversals()
+    
+    # print(d.filenames)
+    
+    # scale = 10
+    # y1,y2 = -scale*2, scale*32
+    
+    # a = iter(d_train)
+    # b = iter(d_test)
+    # while(a and b):
+    #     fig, axes = plt.subplots(2,1)
+    #     for index, c in enumerate([a,b]):
+    #         train_d = next(c)
+    #         data = train_d[0]
+            
+    #         axes[index].plot(data.numpy().T + np.arange(data.shape[0])[None,:]*scale)
+    #         box = train_d[2]
+    #         x1 = (box[:,0] - box[:,1]/2)*INPUT_LENGTH
+    #         x2 = (box[:,0] + box[:,1]/2)*INPUT_LENGTH
+            
+    #         for l,r in zip(x1,x2):
+    #             axes[index].plot([x1,x2,x2,x1,x1], [y1,y1,y2,y2,y1])
+        
+    #     plt.show()

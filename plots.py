@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import os
 
 if __name__ == "__main__":
-    path = "./scnd_try"
+    path = "./runs/large2"
     
     filename = os.path.join(path, "step.csv")
     
