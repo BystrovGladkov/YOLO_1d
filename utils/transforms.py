@@ -312,7 +312,7 @@ class PhaseSpectrumNoise(Module):
         magnitude = torch.abs(spectrum)
         angles = torch.angle(spectrum)
         # add noise to phases
-        noise = torch.randn_like(angles) * self.sigma
+        noise = torch.randn_like(angles) * np.random.uniform(0, self.sigma)
         angles += noise
         # recover the spectrum
         complex_phase = torch.cos(angles) + 1j * torch.sin(angles)

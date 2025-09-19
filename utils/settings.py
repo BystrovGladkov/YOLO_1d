@@ -9,6 +9,7 @@ class TrainingSettings:
     results_path: str = "runs"
     project: str = "detect"
     resume: bool = False # is resume of training needed
+    starting_checkpoint: str = None # path to checkpoint to start training from, ignored if `resume` is true
     
     model_size: Literal["nano", "small", "medium", "large"] = "nano"    # size of model
     

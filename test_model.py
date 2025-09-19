@@ -13,10 +13,10 @@ import matplotlib.pyplot as plt
 
 
 
-def show_labels(model, data):
-    data_np = data.numpy()
+def show_labels(model, data, targets=None):
+    data_np = data.numpy()[0]
     
-    data = data.unsqueeze(0)
+    # data = data.unsqueeze(0)
     
     with torch.no_grad():
         outputs = model(data)
@@ -25,19 +25,28 @@ def show_labels(model, data):
     plt.plot(data_np.T + scale * numpy.arange(0,data_np.shape[0])[None,:])
     y1 = -2*scale
     y2 = (data_np.shape[0]+2) * scale
-    print(outputs)
+    # print(outputs)
     
-    for i, output in enumerate(outputs):
-        # idx = targets['idx'] == i
-        # cls = output[3]
+    for output in outputs:
         for label in output:
             box = label[0:2] / 49152 * data_np.shape[-1]
             x1 = box[0] 
             x2 = box[1]
-            print(box)
-            plt.plot([x1,x1,x2,x2,x1],[y1,y2,y2,y1,y1])
-            plt.plot([(x1+x2)/2]*2,[y1,y2], lw=3)
-            plt.text(x1,y1, "")
+            
+            plt.plot([x1,x1,x2,x2,x1],[y1,y2,y2,y1,y1], color = "cyan")
+            plt.plot([(x1+x2)/2]*2,[y1,y2], lw=3, color = "cyan")
+            plt.text(x1, y1, int(label[3]), color = "cyan", fontsize = 30, va="top")
+    
+    for cls, box in zip(targets["cls"], targets["box"]):
+        # box = label[0:2] / 49152 * data_np.shape[-1]
+        x1 = box[0] * data_np.shape[-1]
+        x2 = box[1] * data_np.shape[-1]/2
+        x1,x2 = x1-x2, x1+x2
+        
+        plt.plot([x1,x1,x2,x2,x1],[y1,y2,y2,y1,y1], color = "red")
+        plt.plot([(x1+x2)/2]*2,[y1,y2], lw=3, color = "red")
+        plt.text(x1, y2, int(cls), color = "red", fontsize = 30, va="bottom")
+    
     plt.show()
 
 def test_use():
@@ -48,19 +57,22 @@ def test_use():
     model.float().fuse()
     model.eval()
     model.cpu()
-    # print(model.stride)
-    d_train, d_test = get_datasets()
     
-    filaname = r"D:\dataset\data_1d\dataset\data\test\kiwi629_left_300.pt"
+    d_train, d_test = get_datasets("test")
     
-    with open(filaname, "rb") as f:
-        data = torch.load(f, map_location="cpu", weights_only=False)
+    # filename = r"D:\dataset\data_1d\dataset\data\test\kiwi629_left_300.pt"
     
-    data = data.float().cpu()
+    # with open(filaname, "rb") as f:
+    #     data = torch.load(f, map_location="cpu", weights_only=False)
+    
+    # data = data.float().cpu()
     # ancors, stride = util.make_anchors(data, model.stride[2:3])
     
-    # print(ancors)
-    # print(stride)
+    for samples, targets in d_test:
+        # print(targets)
+        show_labels(model, samples, targets)
+    
+    
     
     
 def test_summary():

@@ -12,6 +12,7 @@ from torchvision.transforms.v2 import Compose
 
 from nets import nn
 from utils import util
+from nets.criterion import ComputeLoss
 from utils.dataset import Dataset
 from utils.logging import Logger
 import utils.transforms as transforms
@@ -47,21 +48,29 @@ class Trainer:
     
     def __init__(self, args: Dict):
         self._args = args
+        
+        self._chkpt_path = self._args.get("starting_checkpoint", None) 
+        if self._chkpt_path:
+            self._chkpt_path = os.path.abspath(self._chkpt_path)   
         # parameters of 
-        self._results_path = os.path.join(os.getcwd(), self._args.get("results_path", "runs"))
-        self._project = self._args.get("project","detect")
+        self._results_path = os.path.abspath(self._args.get("results_path", "runs"))
+        self._project = self._args.get("project", "detect")
         self._num = first_available(self._results_path, self._project)
         # is resume available
         self._resume = self._args.get("resume", False) and self._num > 1
-
         # if need to resume training - load last session
         if self._resume:
             self._num = max(self._num - 1, 1)
-        # path for training results    
+        # path for results    
         self._project_path = os.path.join(self._results_path, f"{self._project}{self._num}")
-        os.makedirs(self._project_path, exist_ok=True)
-        # load training settings
+        # load settings
         self._load_settings()
+        self._init_model()  
+        self._prepare_transforms()
+        self._init_dataloaders()
+        self._init_training()
+        self._load_model_weights()
+        
     
     def _load_settings(self):
         """ Loads and saves configuration of training. """
@@ -77,12 +86,10 @@ class Trainer:
         self._args.update(params)
         # parse settings
         self._settings = TrainingSettings.from_dict(self._args)
-        # save all config 
-        with open(os.path.join(self._project_path, "args.yaml"), "w") as f:
-            yaml.dump(self._args, f)
         self._num_classes = len(self._settings.names)
     
     def _get_model(self):
+        """ Creates a model of desired size."""
         if self._settings.model_size == "nano":
             return nn.yolo_v11_n(self._num_classes)
         if self._settings.model_size == "small":
@@ -93,16 +100,36 @@ class Trainer:
             return nn.yolo_v11_l(self._num_classes)
     
     def _init_model(self):
-        
+        """
+            Initializes a model.
+        """
         self._device = "cuda" if torch.cuda.is_available() else "cpu"
         # create model
         self._model = self._get_model()
         self._model.to(self._device)
         
+        # Exponential moving average for weights of model
+        self._ema = util.EMA(self._model)
+    
+    def _init_dataloaders(self):
         # load dataset
         self._train_dataset = Dataset(self._settings.dataset, transform=self._train_transform, type="train", mosaic_prob=self._settings.mosaic)
         self._val_dataset = Dataset(self._settings.dataset, transform=self._test_transform, type="val")
-        
+        self._test_dataset = Dataset(self._settings.dataset, transform=self._test_transform, type="test")
+         
+        # create dataloaders
+        self._train_loader = data.DataLoader(self._train_dataset, self._settings.batch_size, 
+                                num_workers=8, pin_memory=True, collate_fn=Dataset.collate_fn)        
+        self._val_loader = data.DataLoader(self._val_dataset, self._settings.batch_size, shuffle=False,
+                                num_workers=4, pin_memory=True, collate_fn=Dataset.collate_fn)
+        self._test_loader = data.DataLoader(self._test_dataset, self._settings.batch_size, shuffle=False,
+                                num_workers=4, pin_memory=True, collate_fn=Dataset.collate_fn)
+
+    def _init_training(self):
+        """
+            Initializes everything needed for training.
+        """
+
         # scaling of Regularization to make it independent of batch_size
         self._accumulate = max(round(64 / (self._settings.batch_size)), 1)
         self._settings.weight_decay *= self._settings.batch_size * self._accumulate / 64
@@ -111,14 +138,7 @@ class Trainer:
                                 self._settings.min_lr, self._settings.momentum, nesterov=True)
         self._start_epoch = 0
         
-        # Exponential moving average for weights of model
-        self._ema = util.EMA(self._model)
-
-        # create dataloaders
-        self._train_loader = data.DataLoader(self._train_dataset, self._settings.batch_size, 
-                                num_workers=8, pin_memory=True, collate_fn=Dataset.collate_fn)        
-        self._val_loader = data.DataLoader(self._val_dataset, self._settings.batch_size, shuffle=False,
-                                num_workers=4, pin_memory=True, collate_fn=Dataset.collate_fn)
+        
 
         # Scheduler
         self._num_steps = len(self._train_loader)
@@ -129,10 +149,13 @@ class Trainer:
         # automatic mixed precision scaling of gradients
         self._amp_scale = torch.amp.GradScaler() #if self._settings.enable_amp else None
         # loss function
-        self._criterion = util.ComputeLoss(self._model, self._settings.weight_box,
+        self._criterion = ComputeLoss(self._model, self._settings.weight_box,
                                           self._settings.weight_cls, self._settings.weight_dfl)
-           
-    def _prepare_pransforms(self):
+        
+    def _prepare_transforms(self):
+        """
+            Creates transforms for dataLoaders.
+        """
         # TODO: read parameters
         self._train_transform = Compose([
             transforms.MarkScaling(300),        # apply scaling to data in bboxes
@@ -151,57 +174,41 @@ class Trainer:
             transforms.Resize(Trainer.INPUT_LENGTH),    # apply resizing to signal
             ])
         
-    def _prepare(self):
+    def _load_model_weights(self):
         # paths to resulting files
-        self._logger_path = os.path.join(self._project_path, 'step.csv')
         self._best_path = os.path.join(self._project_path, 'best.pt')
         self._last_path = os.path.join(self._project_path, 'last.pt')
         
-        # load state of model
+        checkpoint: Dict = None
+        # load state of model for resume
         if self._resume and os.path.exists(self._last_path):
             checkpoint = torch.load(self._last_path, weights_only=False)
+        # start from checkpoint
+        if not self._resume and self._chkpt_path:
+            checkpoint = torch.load(self._chkpt_path, weights_only=False)
+        # load checkpoint
+        if checkpoint is not None:
             self._model.load_state_dict(checkpoint['model'], strict=False)   # load model
             self._start_epoch = checkpoint['epoch']                  # load number of last epoch
             self._ema.load_state_dict(checkpoint['ema'])             # load Averaged weights of model (for testing)
-            self._optimizer.load_state_dict(checkpoint["optimizer"]) # load optimizer state
+            if "optimizer" in checkpoint.keys():
+                self._optimizer.load_state_dict(checkpoint["optimizer"]) # load optimizer state
     
-    def _adversal_augmentations(self, images:torch.Tensor, targets:torch.Tensor):
-        # fraction of signals power to change
-        scale = 0.05
-        # add gradient to images
-        images = images.clone().detach().requires_grad_(True)
-        
-        # turn off gradients
-        prev_requires = []
-        for p in self._model.parameters():
-            prev_requires.append(p.requires_grad)
-            p.requires_grad_(False)
-        # compute loss
-        outputs = self._model(images)
-        loss_box, loss_cls, loss_dfl = self._criterion(outputs, targets)
-        
-        loss = (loss_box + loss_cls + loss_dfl)
-        # calculate gradient
-        grad_x = torch.autograd.grad(loss, images, retain_graph=False, create_graph=False)[0]
-        # calculate powers of signal and gradient
-        power = images.square().sum(dim=-1) / images.size(-1)
-        grad_power = grad_x.square().sum(dim=-1) / grad_x.size(-1)
-        # calculate a scale
-        scale = scale * power / grad_power
-        # add gradient to images
-        images += scale * scale
-        
-        # turn on_gradients
-        for p, r in zip(self._model.parameters(), prev_requires):
-            p.requires_grad_(r)
-            
-        return images.detach()
+    def _strip_optimizer(self, name):
+        chkpt = torch.load(name, weights_only=False)
+        if "optimizer" in chkpt.keys():
+            del chkpt["optimizer"]
+        torch.save(chkpt, f=name)
     
     def train(self):
-        self._prepare_pransforms()
-        self._init_model()
-        self._prepare()
+        # create folder for results
+        os.makedirs(self._project_path, exist_ok=True)
+        # save training config
+        with open(os.path.join(self._project_path, "args.yaml"), "w") as f:
+            yaml.dump(self._args, f)
+        
         best = 0
+        self._logger_path = os.path.join(self._project_path, 'step.csv')
         # show summary
         dummy_size = (self._settings.batch_size, 30, self.REGULAR_LENGTH)
         print(summary(self._model, dummy_size))
@@ -283,7 +290,7 @@ class Trainer:
                 self._epoch_results["cls_train"] = avg_cls_loss.avg
                 self._epoch_results["dfl_train"] = avg_dfl_loss.avg
                 # validation
-                self.test()
+                self.validate()
                 # logging results
                 logger.writerow({
                         'epoch': str(epoch + 1).zfill(3),
@@ -307,15 +314,17 @@ class Trainer:
                     shutil.copy(self._last_path, self._best_path)
                 # delete checkpoint
                 del save
+        # delete optimizer from checkpoints
+        self._strip_optimizer(self._last_path)
+        self._strip_optimizer(self._best_path)
     
-
     @torch.no_grad()
-    def test(self):
+    def validate(self):
 
         self._ema.ema.eval()
         self._ema.ema.set_validate(True)
         
-        criterion = util.ComputeLoss(self._ema.ema, self._settings.weight_box,
+        criterion = ComputeLoss(self._ema.ema, self._settings.weight_box,
                         self._settings.weight_cls, self._settings.weight_dfl)
         
         # Configure
@@ -377,20 +386,75 @@ class Trainer:
         r["cls_val"] = avg_cls_loss.avg
         r["dfl_val"] = avg_dfl_loss.avg
         
+    @torch.no_grad()
+    def test(self):
+        self._ema.ema.eval()
+        
+        # Configure
+        iou_v = torch.linspace(start=0.5, end=0.95, steps=10).cuda()  # iou vector for mAP@0.5:0.95
+        n_iou = iou_v.numel()
 
+        metrics = []
+        p_bar = tqdm.tqdm(self._train_loader, desc=('%10s' * 5) % ('', 'precision', 'recall', 'mAP50', 'mAP'))
 
+        for samples, targets in p_bar:
+            samples = samples.cuda().float()
+            w = samples.shape[2]  # length of signal
+            scale = torch.tensor((w, w)).cuda()
+            # Inference
+            outputs = self._ema.ema(samples)
+            # NMS
+            outputs = util.non_max_suppression(outputs)
+            # Metrics
+            for i, output in enumerate(outputs):
+                idx = targets['idx'] == i
+                cls = targets['cls'][idx]
+                box = targets['box'][idx]
+
+                cls = cls.cuda()
+                box = box.cuda()
+
+                metric = torch.zeros(output.shape[0], n_iou, dtype=torch.bool).cuda()
+
+                if output.shape[0] == 0:
+                    if cls.shape[0]:
+                        metrics.append((metric, *torch.zeros((2, 0)).cuda(), cls.squeeze(-1)))
+                    continue
+                # Evaluate
+                if cls.shape[0]:
+                    target = torch.cat(tensors=(cls, util.wh2xy(box) * scale), dim=1)
+                    metric = util.compute_metric(output[:, :4], target, iou_v)
+                # Append
+                metrics.append((metric, output[:, 2], output[:, 3], cls.squeeze(-1)))
+        # Compute metrics
+        metrics = [torch.cat(x, dim=0).cpu().numpy() for x in zip(*metrics)]  # to numpy
+        if len(metrics) and metrics[0].any():
+            tp, fp, Precision, Recall,  \
+                            mAP50, mAP = util.compute_ap(*metrics)
+        # Print results
+        print(('%10s' + '%10.3g' * 4) % ('', Precision, Recall, mAP50, mAP))
+    
+    @torch.no_grad()
+    def predict(self, data: torch.Tensor, conf: float = 0.1):
+        data = self._test_transform(data)
+        outputs = self._ema.ema(data)
+        outputs = util.non_max_suppression(outputs, conf)
+        return outputs
+        
+        
 
 def main():
     
     config = {
-        "project": "large",
+        "project": "small",
         "results_path": "runs",
         "dataset": "D:/dataset/data_1d/dataset/dataset.yaml",
         "batch_size": 50,
-        "epochs": 150,
-        "resume": False,
-        "model_size": "large",
+        "epochs": 200,
+        "resume": True,
+        "model_size": "small",
         "enable_amp": True,
+        # "starting_checkpoint": r"E:\git\neuro\YOLOv11-pt\runs\large2\best.pt",
     }
 
     util.setup_seed()
@@ -399,6 +463,9 @@ def main():
     trainer = Trainer(config)
     
     trainer.train()
+    # trainer.validate()
+    print("Testing:")
+    trainer.test()
 
     torch.cuda.empty_cache()
 

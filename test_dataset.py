@@ -17,7 +17,7 @@ INPUT_LENGTH = 49152
 
 
 
-def get_datasets():
+def get_datasets(type = "val"):
     train_transform = Compose([
         transforms.MarkScaling(300),    
         transforms.RandomResize(0.1),
@@ -42,10 +42,10 @@ def get_datasets():
     train_transform = test_transform
     
     d_train = Dataset("D:\dataset\data_1d\dataset\dataset.yaml", 
-                transform=train_transform, type="val", mosaic_prob=0.0)
+                transform=train_transform, type=type, mosaic_prob=0.0)
     
     d_test = Dataset("D:\dataset\data_1d\dataset\dataset.yaml", 
-                transform=test_transform, type="val", mosaic_prob=0.0)
+                transform=test_transform, type=type, mosaic_prob=0.0)
     
     d_train = torch.utils.data.DataLoader(d_train, 1, shuffle=False, collate_fn=d_train.collate_fn)
     d_test = torch.utils.data.DataLoader(d_test, 1, shuffle=False, collate_fn=d_train.collate_fn)
