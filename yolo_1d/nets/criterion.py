@@ -1,6 +1,6 @@
 import torch
 
-from utils.util import compute_iou, make_anchors
+from yolo_1d.utils.util import compute_iou, make_anchors
 from torch.nn.functional import cross_entropy
 
 class Assigner(torch.nn.Module):

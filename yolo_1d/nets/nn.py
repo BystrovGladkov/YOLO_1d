@@ -3,7 +3,7 @@ import math
 import torch
 import torch.nn as nn
 
-from utils.util import make_anchors
+from yolo_1d.utils.util import make_anchors
 
 
 def fuse_conv(conv, norm):

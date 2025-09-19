@@ -2,24 +2,24 @@ from typing import List, Dict
 
 import csv
 import os
+from pathlib import Path
 import warnings
+import shutil
 
 import torch
 import tqdm
 import yaml
 from torch.utils import data
 from torchvision.transforms.v2 import Compose
-
-from nets import nn
-from utils import util
-from nets.criterion import ComputeLoss
-from utils.dataset import Dataset
-from utils.logging import Logger
-import utils.transforms as transforms
-from utils.settings import TrainingSettings
-import shutil
 from torchinfo import summary
 import numpy as np
+
+from yolo_1d.nets import nn
+from yolo_1d.utils import util
+from yolo_1d.nets.criterion import ComputeLoss
+from yolo_1d.utils.dataset import Dataset
+import yolo_1d.utils.transforms as transforms
+from yolo_1d.utils.settings import TrainingSettings
 
 warnings.filterwarnings("ignore")
 
@@ -78,7 +78,9 @@ class Trainer:
         if self._resume:
             args_path = os.path.join(self._project_path, "args.yaml")
         else:
-            args_path = "./utils/args.yaml"
+            # TODO instead better to create local args, so user can change them.
+            root = Path(__file__).resolve().parent
+            args_path = os.path.join(root, "./utils/args.yaml")
         # read the config
         with open(args_path, errors='ignore') as f:
             params = yaml.safe_load(f)
@@ -443,33 +445,4 @@ class Trainer:
         
         
 
-def main():
-    
-    config = {
-        "project": "small",
-        "results_path": "runs",
-        "dataset": "D:/dataset/data_1d/dataset/dataset.yaml",
-        "batch_size": 50,
-        "epochs": 200,
-        "resume": True,
-        "model_size": "small",
-        "enable_amp": True,
-        # "starting_checkpoint": r"E:\git\neuro\YOLOv11-pt\runs\large2\best.pt",
-    }
 
-    util.setup_seed()
-    util.setup_multi_processes()
-
-    trainer = Trainer(config)
-    
-    trainer.train()
-    # trainer.validate()
-    print("Testing:")
-    trainer.test()
-
-    torch.cuda.empty_cache()
-
-
-if __name__ == "__main__":
-    Logger.add_console_handler()
-    main()
