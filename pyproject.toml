@@ -7,5 +7,9 @@ name = "yolo_1d"
 version = "1.0.0"
 description = "Implementation of Yolo architecture for signals."
 authors = [{name = "Artemy Gladkov", email="gladkov.art76@gmail.com"}]
-license = { text = "MIT" }
 dependencies=[]
+
+
+[tool.setuptools.packages.find]
+where = ["src"] 
+include = ["yolo_1d*"] 

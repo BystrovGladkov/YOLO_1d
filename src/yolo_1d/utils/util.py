@@ -325,15 +325,6 @@ def compute_iou(box1, box2, eps=1e-7):
     # https://github.com/Zzh-tju/DIoU-SSD-pytorch/blob/master/utils/box/box_utils.py#L47
     return iou - (rho2 / c2)  # CIoU
 
-
-def strip_optimizer(filename):
-    x = torch.load(filename, map_location="cpu", weights_only=False)
-    # x['model'].half()  # to FP16
-    for p in x['model'].parameters():
-        p.requires_grad = False
-    torch.save(x, f=filename)
-
-
 def clip_gradients(model, max_norm=10.0):
     parameters = model.parameters()
     torch.nn.utils.clip_grad_norm_(parameters, max_norm=max_norm)
