@@ -122,7 +122,7 @@ class Trainer:
         # if need to resume training
         if self._resume and self._checkpoint and "optimizer" in self._checkpoint.keys():
             self._optimizer.load_state_dict(self._checkpoint["optimizer"]) # load optimizer state
-        if not self._start_epoch:
+        if not self._resume:
             self._start_epoch = 0
         
         # Scheduler
@@ -428,9 +428,17 @@ class Trainer:
     
     @torch.no_grad()
     def predict(self, data: torch.Tensor, conf: float = 0.1):
+        # create empty boxes and labels to pass into transform
+        bboxes, labels = torch.zeros((0,2), device=data.device, dtype=torch.float), torch.zeros((0), device=data.device, dtype=torch.float)
+        # convert data to float
+        data = data.float()
+        # apply transform
+        data, _, _ = self._test_transform(data, bboxes, labels)
+        # add batch
         if data.ndim == 2:
             data = data.unsqueeze(0)
-        data = self._test_transform(data)
+        data = data.to(self._device)
+        # get predictions
         outputs = self._ema.ema(data)
         outputs = util.non_max_suppression(outputs, conf)
         return outputs

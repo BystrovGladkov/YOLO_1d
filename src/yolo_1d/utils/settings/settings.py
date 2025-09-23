@@ -39,7 +39,7 @@ class TrainingSettings(BaseModel):
     momentum: float = Field(0.937, ge=0.0, le=1.0, description="Momentum in optimizer (0-1).")
     warmup_epochs: float = Field(3.0, ge=0.0, description="Number of warmup epochs (>= 0).")
 
-    names: List[str] = Field(default_factory=list, description="List of names of classes (labels).")
+    names: List[str] = Field(..., description="List of names of classes (labels).")
 
     # augmentations settings
     mosaic: float = Field(0.0, ge=0.0, le=1.0, description="Probability of mosaic augmentation (0-1).")

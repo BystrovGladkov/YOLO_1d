@@ -114,11 +114,11 @@ def compute_metric(output, target, iou_v):
             correct[matches[:, 1].astype(int), i] = True
     return torch.tensor(correct, dtype=torch.bool, device=output.device)
 
-
+# TODO: pass regular size and input size everywhere
+# TODO: unnormalize marks in predict
 def non_max_suppression(outputs, confidence_threshold=0.001, iou_threshold=0.65):
     max_wh = 50000 # 
     max_det = 300 # Максимальное количество предсказанных bbox
-    max_nms = 30000 # Количество bbox, рассматриваемх как кандидаты на ответ
 
     bs = outputs.shape[0]  # batch size
     nc = outputs.shape[1] - 2  # number of classes

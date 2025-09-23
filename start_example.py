@@ -14,6 +14,7 @@ def main():
         "resume": False,
         "model_size": "nano",
         "enable_amp": True,
+        "names":["flashbutt", "aluminithermic", "rail end", "axle counter", "crossing", "manual arc"]
         # "starting_checkpoint": r"E:\git\neuro\YOLOv11-pt\runs\large2\best.pt",
     }
 
@@ -21,6 +22,7 @@ def main():
     util.setup_multi_processes()
 
     t = TrainingSettings(**config)
+    t.names
     
     trainer = Trainer(t)
     
