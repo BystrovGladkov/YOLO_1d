@@ -353,3 +353,21 @@ def yolo_v11_l(num_classes: int = 80):
     depth = [1, 1, 1, 1, 1, 2, 2, 2, 3]
     width = [32, 64, 64, 96, 128, 192, 256, 512]
     return YOLO(width, depth, csp, num_classes, 30)
+
+def yolo_v11_xl(num_classes: int = 80):
+    csp = [True, True, True]
+    depth = [1, 3, 3, 3, 3, 3, 4, 4, 5]
+    width = [32, 64, 64, 96, 128, 192, 256, 512]
+    return YOLO(width, depth, csp, num_classes, 30)
+
+def get_model(size:str, num_classes:int):    
+    if size == "nano":
+        return yolo_v11_n(num_classes)
+    if size == "small":
+        return yolo_v11_s(num_classes)
+    if size == "medium":
+        return yolo_v11_m(num_classes)
+    if size == "large":
+        return yolo_v11_l(num_classes)
+    if size == "xlarge":
+        return yolo_v11_xl(num_classes)

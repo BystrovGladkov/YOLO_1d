@@ -70,15 +70,8 @@ class Trainer:
         
     def _get_model(self):
         """ Creates a model of desired size."""
-        if self._settings.model_size == "nano":
-            return nn.yolo_v11_n(self._num_classes)
-        if self._settings.model_size == "small":
-            return nn.yolo_v11_s(self._num_classes)
-        if self._settings.model_size == "medium":
-            return nn.yolo_v11_m(self._num_classes)
-        if self._settings.model_size == "large":
-            return nn.yolo_v11_l(self._num_classes)
-    
+        return nn.get_model(self._settings.model_size, self._num_classes)
+        
     def _init_model(self):
         """
             Initializes a model.
@@ -100,9 +93,13 @@ class Trainer:
         self._val_dataset = Dataset(self._settings.dataset, transform=self._test_transform, type="val")
         self._test_dataset = Dataset(self._settings.dataset, transform=self._test_transform, type="test")
         
+        weights = util.get_data_weights(self._train_dataset)
+        sampler = torch.utils.data.WeightedRandomSampler(weights=weights,
+                                    num_samples=self._train_dataset.n, replacement=True)
+        
         # create dataloaders
         self._train_loader = data.DataLoader(self._train_dataset, self._settings.batch_size, 
-                                num_workers=8, pin_memory=True, collate_fn=Dataset.collate_fn)        
+                                num_workers=8, pin_memory=True, collate_fn=Dataset.collate_fn, sampler=sampler)        
         self._val_loader = data.DataLoader(self._val_dataset, self._settings.batch_size, shuffle=False,
                                 num_workers=4, pin_memory=True, collate_fn=Dataset.collate_fn)
         self._test_loader = data.DataLoader(self._test_dataset, self._settings.batch_size, shuffle=False,
@@ -196,6 +193,7 @@ class Trainer:
         # save training config
         save_settings(os.path.join(self._project_path, "args.yaml"), self._settings)
         
+        self._adversarial = self._settings.adversarial
         # show summary
         dummy_size = (self._settings.batch_size, 30, self.REGULAR_LENGTH)
         print(summary(self._model, dummy_size))
@@ -214,9 +212,9 @@ class Trainer:
                 self._epoch_results = dict()
                 self._model.train()
                 # turn off mosaic augmentations at last 10 epochs
-                if self._settings.epochs - epoch == 10:
+                if self._settings.epochs - epoch < 10:
                     self._train_loader.dataset.mosaic_prob = 0
-                    self._settings.adversal = 0
+                    self._adversarial = 0
                 # size of progress bar
                 p_bar = enumerate(self._train_loader)
 
@@ -235,7 +233,7 @@ class Trainer:
                     self._scheduler.step(step, self._optimizer)
                     # convert training data
                     samples = samples.to(self._device).float()
-                    if np.random.uniform(0,1) < self._settings.adversal:
+                    if np.random.uniform(0,1) < self._adversarial:
                         samples = util.get_adversal_examples(self._model, self._criterion,
                                             self._amp_scale, samples, targets)
 
@@ -323,7 +321,7 @@ class Trainer:
         n_iou = iou_v.numel()
 
         metrics = []
-        p_bar = tqdm.tqdm(self._train_loader, desc=('%10s' * 5) % ('', 'precision', 'recall', 'mAP50', 'mAP'))
+        p_bar = tqdm.tqdm(self._val_loader, desc=('%10s' * 5) % ('', 'precision', 'recall', 'mAP50', 'mAP'))
         # Sum of losses on validation 
         avg_box_loss = util.AverageMeter()
         avg_cls_loss = util.AverageMeter()
@@ -368,10 +366,20 @@ class Trainer:
         metrics = [torch.cat(x, dim=0).cpu().numpy() for x in zip(*metrics)]  # to numpy
         r = self._epoch_results
         if len(metrics) and metrics[0].any():
-            tp, fp, r["Precision"], r["Recall"],  \
-                            r["mAP@50"], r["mAP"] = util.compute_ap(*metrics)
+            # get the class-wise Precision and REcall
+            _,_, rec, pre, AP50, AP = util.compute_ap(*metrics)
+            r["Precision"], r["Recall"], r["mAP@50"], r["mAP"] = rec.mean(), pre.mean(), AP50.mean(), AP.mean()
+        else:
+            rec = np.zeros(self._num_classes)
+            pre = np.zeros(self._num_classes)
+            AP50 = np.zeros(self._num_classes)
+            AP = np.zeros(self._num_classes)
         # Print results
         print(('%10s' + '%10.3g' * 4) % ('', r.get("Precision",0), r.get("Recall",0), r.get("mAP@50",0), r.get("mAP",0)))
+        
+        for name, prec, recl, ap50, ap in zip(self._settings.names, rec, pre, AP50, AP):
+            print(('%10s' + '%10.3g' * 4) % (name, prec, recl, ap50, ap))
+        
         # Return results
         r["box_val"] = avg_box_loss.avg
         r["cls_val"] = avg_cls_loss.avg
@@ -387,7 +395,7 @@ class Trainer:
         n_iou = iou_v.numel()
 
         metrics = []
-        p_bar = tqdm.tqdm(self._train_loader, desc=('%10s' * 5) % ('', 'precision', 'recall', 'mAP50', 'mAP'))
+        p_bar = tqdm.tqdm(self._test_loader, desc=('%10s' * 5) % ('', 'precision', 'recall', 'mAP50', 'mAP'))
 
         for samples, targets in p_bar:
             samples = samples.cuda().float()
@@ -421,13 +429,18 @@ class Trainer:
         # Compute metrics
         metrics = [torch.cat(x, dim=0).cpu().numpy() for x in zip(*metrics)]  # to numpy
         if len(metrics) and metrics[0].any():
-            tp, fp, Precision, Recall,  \
-                            mAP50, mAP = util.compute_ap(*metrics)
+            # get the class-wise Precision and REcall
+            _,_, rec, pre, AP50, AP = util.compute_ap(*metrics)
+            
         # Print results
-        print(('%10s' + '%10.3g' * 4) % ('', Precision, Recall, mAP50, mAP))
+        print(('%10s' + '%10.3g' * 4) % ('', pre.mean(), rec.mean(), AP50.mean(), AP.mean()))
+        
+        for name, prec, recl, ap50, ap in zip(self._settings.names, rec, pre, AP50, AP):
+            print(('%10s' + '%10.3g' * 4) % (name, prec, recl, ap50, ap))
+        
     
     @torch.no_grad()
-    def predict(self, data: torch.Tensor, conf: float = 0.1):
+    def predict(self, data: torch.Tensor, conf: float = 0.1) -> torch.Tensor:
         # create empty boxes and labels to pass into transform
         bboxes, labels = torch.zeros((0,2), device=data.device, dtype=torch.float), torch.zeros((0), device=data.device, dtype=torch.float)
         # convert data to float
@@ -441,6 +454,8 @@ class Trainer:
         # get predictions
         outputs = self._ema.ema(data)
         outputs = util.non_max_suppression(outputs, conf)
+        for out in outputs:
+            out[:, :2] = out[:, :2] / self.INPUT_LENGTH * self.REGULAR_LENGTH
         return outputs
         
         

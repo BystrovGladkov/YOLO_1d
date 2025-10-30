@@ -114,11 +114,10 @@ def compute_metric(output, target, iou_v):
             correct[matches[:, 1].astype(int), i] = True
     return torch.tensor(correct, dtype=torch.bool, device=output.device)
 
-# TODO: pass regular size and input size everywhere
-# TODO: unnormalize marks in predict
 def non_max_suppression(outputs, confidence_threshold=0.001, iou_threshold=0.65):
     max_wh = 50000 # 
     max_det = 300 # Максимальное количество предсказанных bbox
+    max_nms = 30000 # Количество bbox, рассматриваемх как кандидаты на ответ
 
     bs = outputs.shape[0]  # batch size
     nc = outputs.shape[1] - 2  # number of classes
@@ -297,9 +296,9 @@ def compute_ap(tp, conf, output, target, plot=False, eps=1E-16):
     tp = (r * nt).round()  # true positives
     fp = (tp / (p + eps) - tp).round()  # false positives
     ap50, ap = ap[:, 0], ap.mean(1)  # AP@0.5, AP@0.5:0.95
-    m_pre, m_rec = p.mean(), r.mean()
-    map50, mean_ap = ap50.mean(), ap.mean()
-    return tp, fp, m_pre, m_rec, map50, mean_ap
+    # m_pre, m_rec = p.mean(), r.mean()
+    # map50, mean_ap = ap50.mean(), ap.mean()
+    return tp, fp, p, r, ap50, ap
 
 
 def compute_iou(box1, box2, eps=1e-7):
@@ -386,6 +385,29 @@ def plot_lr(args, optimizer, scheduler, num_steps):
     pyplot.savefig('./weights/lr.png', dpi=200)
     pyplot.close()
 
+from yolo_1d.utils.dataset import Dataset
+
+def get_data_weights(dataset: Dataset, eps=1e-5):
+    """ Calculates a weights of data samples to fix unbalanced classes. """
+    data_to_class = []
+    class_counts = numpy.zeros(dataset.num_classes, dtype=numpy.float32)
+    for labels in dataset.labels.values():
+        data_to_class.append(labels[:, 0].astype(int))
+        for i in labels[:, 0]:
+            class_counts[int(i)] += 1
+            
+    inv_freq = 1.0 / (class_counts + eps)  
+    weights = []
+    for classes in data_to_class:
+        if len(classes) == 0:
+            weights.append(1.0)
+        else:
+            w = float(inv_freq[classes].max())  # или .mean()
+            weights.append(w)
+    weights = numpy.array(weights, dtype=numpy.float32)
+    # нормируем, чтобы средний вес ~1
+    weights = weights / (weights.mean() + eps)
+    return weights
 
 class CosineLR:
     def __init__(self, args, params, num_steps):
