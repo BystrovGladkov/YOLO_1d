@@ -63,6 +63,7 @@ class Trainer:
         # path for results    
         self._project_path = os.path.join(self._results_path, f"{self._project}{self._num}")
         self._num_classes = len(self._settings.names)
+        self._epoch_results = dict()
         # load settings
         self._init_model()  
         self._prepare_transforms()
@@ -437,7 +438,6 @@ class Trainer:
         
         for name, prec, recl, ap50, ap in zip(self._settings.names, rec, pre, AP50, AP):
             print(('%10s' + '%10.3g' * 4) % (name, prec, recl, ap50, ap))
-        
     
     @torch.no_grad()
     def predict(self, data: torch.Tensor, conf: float = 0.1) -> torch.Tensor:
@@ -457,7 +457,16 @@ class Trainer:
         for out in outputs:
             out[:, :2] = out[:, :2] / self.INPUT_LENGTH * self.REGULAR_LENGTH
         return outputs
-        
+    
+    def export_onnx(self, filename, opset=17):
+        example_input = (torch.randn((1, 30, self.REGULAR_LENGTH), device=self._device),)
+        self._ema.ema.eval()
+        torch.onnx.export(self._ema.ema, example_input,
+            f=filename,   
+            input_names=["input"],
+            output_names=["output"],
+            dynamic_axes={"input": {0: "batch"}, "output": {0: "batch"}},
+            opset_version=opset)
         
 
 

@@ -3,22 +3,23 @@ import math
 import os
 import random
 
-import cv2
 import numpy
 import torch
-from PIL import Image
 from torch.utils import data
 
 import yaml
 
-FORMATS = 'bmp', 'dng', 'jpeg', 'jpg', 'mpo', 'png', 'tif', 'tiff', 'webp'
-
 class Dataset(data.Dataset):
     
-    def __init__(self, filename, transform, type: Literal["train", "val", "test"], mosaic_prob=0):
+    def __init__(self, filename, transform, type: Literal["train", "val", "test"],
+                 mosaic_prob=0,
+                 mix_up_prob=0,
+                 mix_up_alpha=20):
         super().__init__()
         self.transform = transform
         self.mosaic_prob = mosaic_prob
+        self.mix_up_prob = mix_up_prob
+        self.mix_up_alpha = mix_up_alpha
         self.filename = filename
         self.type = type
         # Загружаем конфигурацию датасета
@@ -153,12 +154,41 @@ class Dataset(data.Dataset):
         
         return signals, labels
     
+    def load_mix_up(self, data1, target_box1, target_cls1):
+        # load another signal
+        index = random.choices(self.indices, k=1)[0]
+        # load signal
+        data2 = self.load_signal(index)
+            # load labels
+        label = self.labels[self.filenames[index]].copy()
+
+        nl = len(label)  # number of labels
+        cls = label[:, 0:1]
+        box = label[:, 1:3]
+        # convert labels to torch tensors
+        target_cls2 = torch.zeros((nl, 1))
+        target_box2 = torch.zeros((nl, 2))
+        if nl:
+            target_cls2 = torch.from_numpy(cls)
+            target_box2 = torch.from_numpy(box)
+        # perform transform
+        data2, target_box2, target_cls2 = self.transform.forward(data2, target_box2, target_cls2)
+        
+        lamb = float(numpy.random.beta(self.mix_up_alpha, self.mix_up_alpha, 1))
+        # mix the signals
+        data1 = data1 * lamb + data2 * (1 - lamb)
+        target_box1 = torch.concat([target_box1, target_box2], axis=0)
+        target_cls1 = torch.concat([target_cls1, target_cls2], axis=0)
+        return data1, target_box1, target_cls1
+        
+    
     def __getitem__(self, index) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
             Extracts signal and labels from dataset.
         """
         index = self.indices[index]
         
+        # load mosaic signal
         if self.mosaic_prob and random.random() < self.mosaic_prob:
             data, label = self.load_mosaic(index)
         else:
@@ -178,6 +208,10 @@ class Dataset(data.Dataset):
             target_box = torch.from_numpy(box)
         # perform transform
         data, target_box, target_cls = self.transform.forward(data, target_box, target_cls)
+        
+        if self.mix_up_prob and random.random() < self.mix_up_prob:
+            data, target_box, target_cls = self.load_mix_up(data, target_box, target_cls)
+        
         nl = target_box.size(0)
 
         return data, target_cls, target_box, torch.zeros(nl)

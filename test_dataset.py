@@ -1,13 +1,13 @@
-from utils.dataset import Dataset
+from yolo_1d.utils.dataset import Dataset
 import matplotlib.pyplot as plt
 import numpy as np
 from torchvision.transforms.v2 import Compose
-import utils.transforms as transforms
+import yolo_1d.utils.transforms as transforms
 import yaml
 import torch
 
-from nets.nn import YOLO, yolo_v11_l
-from utils.util import ComputeLoss
+from yolo_1d.nets.nn import YOLO, yolo_v11_l
+from yolo_1d.nets.criterion import ComputeLoss
 
 # length on one signal sample
 REGULAR_LENGTH = 50000
@@ -15,12 +15,11 @@ REGULAR_LENGTH = 50000
 INPUT_LENGTH = 49152
 
 
-
-
 def get_datasets(type = "val"):
     train_transform = Compose([
         transforms.MarkScaling(300),    
         transforms.RandomResize(0.1),
+        transforms.PhaseSpectrumNoise(0.5), # adds noise in phase spectrum
         transforms.RandomJitter(0.6),
         transforms.TimeMasking(0.2),
         transforms.RandomCrop(INPUT_LENGTH),
@@ -39,7 +38,6 @@ def get_datasets(type = "val"):
         [transforms.Padding(REGULAR_LENGTH),
         transforms.Resize(INPUT_LENGTH),]
     )
-    train_transform = test_transform
     
     d_train = Dataset("D:\dataset\data_1d\dataset\dataset.yaml", 
                 transform=train_transform, type=type, mosaic_prob=0.0)
@@ -95,27 +93,39 @@ def test_adversals():
 
 if __name__ == "__main__":
     
-    test_adversals()
+    
+    
+    # test_adversals()
     
     # print(d.filenames)
     
-    # scale = 10
-    # y1,y2 = -scale*2, scale*32
+    scale = 10
+    y1,y2 = -scale*2, scale*32
     
-    # a = iter(d_train)
-    # b = iter(d_test)
-    # while(a and b):
-    #     fig, axes = plt.subplots(2,1)
-    #     for index, c in enumerate([a,b]):
-    #         train_d = next(c)
-    #         data = train_d[0]
+    d_train, d_test = get_datasets()
+    
+    n = 10
+    i = 0
+    
+    a = iter(d_train)
+    b = iter(d_test)
+    while(a and b):
+        i += 1
+        if i >= n:
+            fig, axes = plt.subplots(2,1)
+            print(i)
+        for index, c in enumerate([a,b]):
+            train_d = next(c)
+            if i < n:
+                continue
+            data = train_d[0].squeeze_(0)
             
-    #         axes[index].plot(data.numpy().T + np.arange(data.shape[0])[None,:]*scale)
-    #         box = train_d[2]
-    #         x1 = (box[:,0] - box[:,1]/2)*INPUT_LENGTH
-    #         x2 = (box[:,0] + box[:,1]/2)*INPUT_LENGTH
+            axes[index].plot(data.numpy().T + np.arange(data.shape[0])[None,:]*scale)
+            box = train_d[1]["box"]
+            x1 = (box[:,0] - box[:,1] / 2) * INPUT_LENGTH
+            x2 = (box[:,0] + box[:,1] / 2) * INPUT_LENGTH
             
-    #         for l,r in zip(x1,x2):
-    #             axes[index].plot([x1,x2,x2,x1,x1], [y1,y1,y2,y2,y1])
-        
-    #     plt.show()
+            for l,r in zip(x1,x2):
+                axes[index].plot([x1,x2,x2,x1,x1], [y1,y1,y2,y2,y1])
+        if i >= n:
+            plt.show()
