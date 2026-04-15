@@ -429,12 +429,18 @@ class Trainer:
                 metrics.append((metric, output[:, 2], output[:, 3], cls.squeeze(-1)))
         # Compute metrics
         metrics = [torch.cat(x, dim=0).cpu().numpy() for x in zip(*metrics)]  # to numpy
+        r = dict()
         if len(metrics) and metrics[0].any():
             # get the class-wise Precision and REcall
-            _,_, rec, pre, AP50, AP = util.compute_ap(*metrics)
-            
+            _, _, rec, pre, AP50, AP = util.compute_ap(*metrics)
+            r["Precision"], r["Recall"], r["mAP@50"], r["mAP"] = rec.mean(), pre.mean(), AP50.mean(), AP.mean()
+        else:
+            rec = np.zeros(self._num_classes)
+            pre = np.zeros(self._num_classes)
+            AP50 = np.zeros(self._num_classes)
+            AP = np.zeros(self._num_classes)
         # Print results
-        print(('%10s' + '%10.3g' * 4) % ('', pre.mean(), rec.mean(), AP50.mean(), AP.mean()))
+        print(('%10s' + '%10.3g' * 4) % ('', r.get("Precision",0), r.get("Recall",0), r.get("mAP@50",0), r.get("mAP",0)))
         
         for name, prec, recl, ap50, ap in zip(self._settings.names, rec, pre, AP50, AP):
             print(('%10s' + '%10.3g' * 4) % (name, prec, recl, ap50, ap))

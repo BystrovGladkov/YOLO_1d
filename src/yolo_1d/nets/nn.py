@@ -225,6 +225,7 @@ class DFL(torch.nn.Module):
     # Generalized Focal Loss
     # https://ieeexplore.ieee.org/document/9792391
     def __init__(self, ch=16):
+        # ch * stride_of_head  = максимальный размер предсказываемого объекта
         super().__init__()
         self.ch = ch
         self.conv = torch.nn.Conv2d(ch, out_channels=1, kernel_size=1, bias=False).requires_grad_(False)

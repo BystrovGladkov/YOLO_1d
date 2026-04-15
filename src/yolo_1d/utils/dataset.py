@@ -104,7 +104,7 @@ class Dataset(data.Dataset):
         self.labels = dict
         return
     
-    def load_signal(self, i) -> Tuple[torch.Tensor, Tuple]:
+    def load_signal(self, i) -> torch.Tensor:
         """
             Reads signal with index i from dataset.
 
