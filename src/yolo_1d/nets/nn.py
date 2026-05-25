@@ -234,7 +234,7 @@ class DFL(torch.nn.Module):
 
     def forward(self, x):
         b, c, a = x.shape
-        x = x.view(b, 2, self.ch, a).transpose(2, 1) # Тепрь предсказывается только начало и конец
+        x = x.view(b, 2, self.ch, a).transpose(2, 1) # Теперь предсказывается только начало и конец
         return self.conv(x.softmax(1)).view(b, 2, a)
 
 

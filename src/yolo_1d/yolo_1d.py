@@ -100,11 +100,11 @@ class Trainer:
         
         # create dataloaders
         self._train_loader = data.DataLoader(self._train_dataset, self._settings.batch_size, 
-                                num_workers=8, pin_memory=True, collate_fn=Dataset.collate_fn, sampler=sampler)        
+                                num_workers=self._settings.num_workers, pin_memory=True, collate_fn=Dataset.collate_fn, sampler=sampler)        
         self._val_loader = data.DataLoader(self._val_dataset, self._settings.batch_size, shuffle=False,
-                                num_workers=4, pin_memory=True, collate_fn=Dataset.collate_fn)
+                                num_workers=self._settings.num_workers, pin_memory=True, collate_fn=Dataset.collate_fn)
         self._test_loader = data.DataLoader(self._test_dataset, self._settings.batch_size, shuffle=False,
-                                num_workers=4, pin_memory=True, collate_fn=Dataset.collate_fn)
+                                num_workers=self._settings.num_workers, pin_memory=True, collate_fn=Dataset.collate_fn)
 
     def _init_training(self):
         """
