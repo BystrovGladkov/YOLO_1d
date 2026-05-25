@@ -174,22 +174,64 @@ class FocalLoss(torch.nn.Module):
 
 
 class BoxLoss(torch.nn.Module):
-    def __init__(self, dfl_ch):
+    def __init__(self, dfl_ch, mse_classes=None):
         super().__init__()
         self.dfl_ch = dfl_ch
+        # Список ID классов (например, [1]), для которых считаем MSE центров.
+        # Если ничего не передано, по умолчанию пустой список.
+        self.mse_classes = mse_classes if mse_classes is not None else []
 
     def forward(self, pred_dist, pred_bboxes, anchor_points, target_bboxes, target_scores, target_scores_sum, fg_mask):
-        # IoU loss
+        
+        # 1. Извлекаем веса (soft labels) для положительных анкоров
         weight = torch.masked_select(target_scores.sum(-1), fg_mask).unsqueeze(-1)
-        iou = compute_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask])
-        loss_box = ((1.0 - iou) * weight).sum() / target_scores_sum
+        # 2. Определяем целевые классы для маскирования
+        # target_scores имеет размер [batch, anchors, num_classes]
+        target_scores_fg = target_scores[fg_mask]          # Выбираем только объекты переднего плана
+        target_classes = target_scores_fg.argmax(dim=-1)   # Находим индекс класса с максимальным score
+        
+        # Создаем булевы маски (is_mse_class = True для Класса 1, is_iou_class = True для Класса 2)
+        device = target_scores.device
+        mse_classes_tensor = torch.tensor(self.mse_classes, device=device)
+        is_mse_class = torch.isin(target_classes, mse_classes_tensor).unsqueeze(-1) # [N, 1]
+        is_iou_class = ~is_mse_class
 
-        # DFL loss
+        # 3. Вычисляем Box Loss
+        pred_b_fg = pred_bboxes[fg_mask]
+        target_b_fg = target_bboxes[fg_mask]
+
+        # --- Вариант А: IoU / DIoU Loss (для Класса 2) ---
+        iou = compute_iou(pred_b_fg, target_b_fg) 
+        # Приводим к размерности [N, 1] на случай, если compute_iou возвращает [N]
+        loss_iou_raw = (1.0 - iou).view(-1, 1)
+
+        # --- Вариант Б: MSE Loss центров (для Класса 1) ---
+        # Вычисляем центры. Использование chunk(2, -1) работает 
+        # и для 1D [x1, x2], и для 2D [x1, y1, x2, y2]
+        p_a, p_b = pred_b_fg.chunk(2, -1)
+        t_a, t_b = target_b_fg.chunk(2, -1)
+        pred_centers = (p_a + p_b) / 2.0
+        target_centers = (t_a + t_b) / 2.0
+
+        # Считаем MSE и усредняем по координатам (если их > 1)
+        loss_mse_raw = torch.nn.functional.smooth_l1_loss(pred_centers, target_centers, reduction='none')
+        #.mean(dim=-1, keepdim=True)
+
+        # --- Объединение Box Loss ---
+        # Смешиваем лоссы: если класс из mse_classes, берем MSE, иначе берем IoU
+        mixed_box_loss = torch.where(is_mse_class, loss_mse_raw, loss_iou_raw)
+        loss_box = (mixed_box_loss * weight).sum() / target_scores_sum
+
+        # 4. Вычисляем DFL Loss
         a, b = target_bboxes.chunk(2, -1)
         target = torch.cat((anchor_points - a, b - anchor_points), -1)
         target = target.clamp(0, self.dfl_ch - 0.01)
-        loss_dfl = self.df_loss(pred_dist[fg_mask].view(-1, self.dfl_ch + 1), target[fg_mask])
-        loss_dfl = (loss_dfl * weight).sum() / target_scores_sum
+        
+        loss_dfl_raw = self.df_loss(pred_dist[fg_mask].view(-1, self.dfl_ch + 1), target[fg_mask])
+        
+        # ВАЖНО: Умножаем DFL лосс на is_iou_class. 
+        # Это обнуляет (отключает) градиенты DFL для Класса 1
+        loss_dfl = (loss_dfl_raw * weight * is_iou_class).sum() / target_scores_sum
 
         return loss_box, loss_dfl
 
@@ -224,7 +266,7 @@ class ComputeLoss:
         self.reg_max = m.ch
         self.device = device
 
-        self.box_loss = BoxLoss(m.ch - 1).to(device)
+        self.box_loss = BoxLoss(m.ch - 1, mse_classes=[0, 1, 2]).to(device)
         # Classification loss with iou-aware scoring
         self.cls_loss = torch.nn.BCEWithLogitsLoss(reduction='none')
         self.assigner = Assigner(nc=self.nc, top_k=10, alpha=0.5, beta=4.0)

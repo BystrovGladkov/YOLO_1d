@@ -250,6 +250,8 @@ class Head(torch.nn.Module):
         self.no = nc + self.ch * 2  # number of outputs per anchor
         self.stride = torch.zeros(self.nl)  # strides computed during build
         self.validate = False
+        self.mse_classes_tensor = torch.tensor([0,1,2])
+        self.fixed_width = 200 / 50000 * SIGNAL_LENGTH
 
         box = max(64, filters[0] // 4)
         cls = max(80, filters[0], self.nc)
@@ -279,9 +281,26 @@ class Head(torch.nn.Module):
         a, b = self.dfl(box).chunk(2, 1)
         a = self.anchors.unsqueeze(0) - a
         b = self.anchors.unsqueeze(0) + b
-        box = torch.cat(tensors=((a + b) / 2, b - a), dim=1)
+        # Разделяем вычисления на центр и ширину
+        center = (a + b) / 2
+        width = b - a
         
-        y = torch.cat(tensors=(box * self.strides, cls.sigmoid()), dim=1)
+        # Вычисляем вероятности и находим топовый класс для каждого анкора
+        cls_scores = cls.sigmoid()
+        pred_classes = cls_scores.argmax(dim=1, keepdim=True)
+        
+        self.mse_classes_tensor = self.mse_classes_tensor.to(pred_classes.device)
+        is_fixed_class = torch.isin(pred_classes, self.mse_classes_tensor)
+        fixed_width_fm = self.fixed_width / self.strides
+        
+        # Заменяем предсказанную ширину на фиксированную только там, где сработала маска
+        width = torch.where(is_fixed_class, fixed_width_fm, width)
+        
+        # 5. Собираем box обратно и масштабируем
+        box = torch.cat(tensors=(center, width), dim=1)
+        
+        # cls_scores уже пропущены через sigmoid, поэтому используем их напрямую
+        y = torch.cat(tensors=(box * self.strides, cls_scores), dim=1)
         
         return (x, y) if self.validate else y
 
