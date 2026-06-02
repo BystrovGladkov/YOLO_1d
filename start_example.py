@@ -18,6 +18,9 @@ def main():
         # "starting_checkpoint": r"E:\git\neuro\YOLOv11-pt\runs\large_data4\best.pt",
         "weight_box": 10,
         "weight_dfl": 3,
+        "num_workers": 4,
+        "mosaic": 0.5,
+        "mix_up": 0.5,
     }
 
     util.setup_seed()

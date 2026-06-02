@@ -90,7 +90,10 @@ class Trainer:
         if hasattr(self, "_train_dataset"):
             return
         # load dataset
-        self._train_dataset = Dataset(self._settings.dataset, transform=self._train_transform, type="train", mosaic_prob=self._settings.mosaic)
+        self._train_dataset = Dataset(self._settings.dataset, transform=self._train_transform, type="train", 
+                                      mosaic_prob=self._settings.mosaic,
+                                      mix_up_prob=self._settings.mix_up,
+                                      mix_up_alpha=self._settings.mix_up_alpha)
         self._val_dataset = Dataset(self._settings.dataset, transform=self._test_transform, type="val")
         self._test_dataset = Dataset(self._settings.dataset, transform=self._test_transform, type="test")
         
@@ -142,13 +145,13 @@ class Trainer:
         self._train_transform = Compose([
             transforms.MarkScaling(300),        # apply scaling to data in bboxes
             transforms.RandomResize(0.1),       # stretch or compress signal in time domain
+            transforms.RandomCrop(Trainer.INPUT_LENGTH),    # make a random crop to desired size
             transforms.PhaseSpectrumNoise(0.5), # adds noise in phase spectrum
             transforms.RandomJitter(0.6),       # add random normal noise
-            transforms.TimeMasking(0.2),        # erase random area in time domain
-            transforms.RandomCrop(Trainer.INPUT_LENGTH),    # make a random crop to desired size
             transforms.RandomInvert(0.5),       # invert sign of channels
             transforms.RandomReverse(0.5),      # reverse signal in time domain
             transforms.ChannelScaling(),        # apply random scaling to channels
+            transforms.TimeMasking(0.2),        # erase random area in time domain
             transforms.ChannelMasking(0.1),     # erase random channels
             ])
         self._test_transform = Compose([

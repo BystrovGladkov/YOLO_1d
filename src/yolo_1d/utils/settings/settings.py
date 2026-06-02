@@ -44,6 +44,8 @@ class TrainingSettings(BaseModel):
 
     # augmentations settings
     mosaic: float = Field(0.0, ge=0.0, le=1.0, description="Probability of mosaic augmentation (0-1).")
+    mix_up: float = Field(0.0, ge=0.0, le=1.0, description="Probability of Mix-up augmentation (0-1).")
+    mix_up_alpha: float = Field(20, ge=0.0, description="Shape parameter for Beta distribution of mix-up coefficient.")
     adversarial: float = Field(0.0, ge=0.0, le=1.0, description="Probability of adversarial batch (0-1).")
 
     class Config:
