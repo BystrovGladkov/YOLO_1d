@@ -19,7 +19,7 @@ from yolo_1d.nets import nn
 from yolo_1d.utils import util
 from yolo_1d.nets.criterion import ComputeLoss
 from yolo_1d.utils.dataset import Dataset
-import yolo_1d.utils.transforms as transforms
+from yolo_1d.utils.transforms import build_training_transforms, build_validation_transform
 from yolo_1d.utils.settings import TrainingSettings, get_default_settings, save_settings, read_settings
 
 warnings.filterwarnings("ignore")
@@ -91,9 +91,9 @@ class Trainer:
             return
         # load dataset
         self._train_dataset = Dataset(self._settings.dataset, transform=self._train_transform, type="train", 
-                                      mosaic_prob=self._settings.mosaic,
-                                      mix_up_prob=self._settings.mix_up,
-                                      mix_up_alpha=self._settings.mix_up_alpha)
+                                      mosaic_prob=self._settings.augmentations.mosaic,
+                                      mix_up_prob=self._settings.augmentations.mix_up,
+                                      mix_up_alpha=self._settings.augmentations.mix_up_alpha)
         self._val_dataset = Dataset(self._settings.dataset, transform=self._test_transform, type="val")
         self._test_dataset = Dataset(self._settings.dataset, transform=self._test_transform, type="test")
         
@@ -141,23 +141,9 @@ class Trainer:
         """
             Creates transforms for dataLoaders.
         """
-        # TODO: read parameters
-        self._train_transform = Compose([
-            transforms.MarkScaling(300),        # apply scaling to data in bboxes
-            transforms.RandomResize(0.1),       # stretch or compress signal in time domain
-            transforms.RandomCrop(Trainer.INPUT_LENGTH),    # make a random crop to desired size
-            transforms.PhaseSpectrumNoise(0.5), # adds noise in phase spectrum
-            transforms.RandomJitter(0.6),       # add random normal noise
-            transforms.RandomInvert(0.5),       # invert sign of channels
-            transforms.RandomReverse(0.5),      # reverse signal in time domain
-            transforms.ChannelScaling(),        # apply random scaling to channels
-            transforms.TimeMasking(0.2),        # erase random area in time domain
-            transforms.ChannelMasking(0.1),     # erase random channels
-            ])
-        self._test_transform = Compose([
-            transforms.Padding(Trainer.REGULAR_LENGTH), # add padding of signal to full size
-            transforms.Resize(Trainer.INPUT_LENGTH),    # apply resizing to signal
-            ])
+        self._train_transform = build_training_transforms(self._settings.augmentations)
+        # self._train_transform = build_validation_transform(self._settings.augmentations)
+        self._test_transform = build_validation_transform(self._settings.augmentations)
         
     def _load_model_weights(self):
         # paths to resulting files
@@ -186,8 +172,17 @@ class Trainer:
     def _load_best_map(self):
         if self._resume and os.path.exists(self._logger_path):
             df = pd.read_csv(self._logger_path)
-            return df["mAP"].max()
-        return 0.0
+            best_idx = df["mAP"].argmax()
+            return df["mAP"].max(), df.iloc[best_idx]["epoch"]
+        return 0.0, -1
+    
+    def _load_best_val_loss(self):
+        if self._resume and os.path.exists(self._logger_path):
+            df = pd.read_csv(self._logger_path)
+            loss = df["box_val"] + df["cls_val"] + df["dfl_val"]
+            best_idx = loss.argmin()
+            return loss.min(), df.iloc[best_idx]["epoch"]
+        return np.inf, -1
     
     def train(self):
         self._init_dataloaders()
@@ -197,13 +192,14 @@ class Trainer:
         # save training config
         save_settings(os.path.join(self._project_path, "args.yaml"), self._settings)
         
-        self._adversarial = self._settings.adversarial
+        self._adversarial = self._settings.augmentations.adversarial
         # show summary
         dummy_size = (self._settings.batch_size, 30, self.REGULAR_LENGTH)
         print(summary(self._model, dummy_size))
         
         self._logger_path = os.path.join(self._project_path, 'step.csv')
-        best = self._load_best_map()
+        # best, best_epoch = self._load_best_map()
+        best, best_epoch = self._load_best_val_loss()
         with open(self._logger_path, "a") as log:
             logger = csv.DictWriter(log, fieldnames=['epoch',
                                     'box_train', 'cls_train', 'dfl_train',
@@ -242,7 +238,7 @@ class Trainer:
                                             self._amp_scale, samples, targets)
 
                     # Forward
-                    # if self._settings.enable_amp:
+                    # if self._settings.enable_amp: TODO: fix amp
                     with torch.amp.autocast('cuda'):
                         outputs = self._model(samples)  # forward
                         loss_box, loss_cls, loss_dfl = self._criterion(outputs, targets)
@@ -300,12 +296,19 @@ class Trainer:
                 # save last model
                 torch.save(save, f=self._last_path)
                 
+                new_val_loss = self._epoch_results["dfl_val"] + self._epoch_results["cls_val"] + self._epoch_results["box_val"]
                 # Update best mAP and save best model
-                if self._epoch_results.get("mAP", 0) > best:
-                    best = self._epoch_results.get("mAP", 0)
+                # if self._epoch_results.get("mAP", 0) > best:
+                if new_val_loss < best:
+                    best = new_val_loss
+                    # best = self._epoch_results.get("mAP", 0)
+                    best_epoch = epoch
                     shutil.copy(self._last_path, self._best_path)
                 # delete checkpoint
                 del save
+                if (self._settings.early_stopping_epochs > 0) and (epoch - best_epoch > self._settings.early_stopping_epochs):
+                    print(f"Early stopping at epoch {epoch}.")
+                    break
         # delete optimizer from checkpoints
         self._strip_optimizer(self._last_path)
         self._strip_optimizer(self._best_path)

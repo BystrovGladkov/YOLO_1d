@@ -81,7 +81,6 @@ class RandomCrop(Module):
     def __init__(self, length: int):
         """
             Performs a random crop of signals to desired length. 
-            If signal is shorter the length, the signals is padded with zeros
         """
         super().__init__()
         self.length = length
@@ -111,23 +110,9 @@ class RandomCrop(Module):
                 ,
         """
         length = signals.size(1)
-        if length == self.length:
-            # copping/padding is not needed
+        if length <= self.length:
+            # copping is not needed, signal is shorter
             return signals, bboxes, labels
-
-        if  length <= self.length:
-            # data is shorter, need padding
-            # generate random position
-            pos = np.random.randint(0, self.length - length)
-            # tensor with zeros
-            result = torch.zeros((signals.size(0), self.length), dtype=signals.dtype)
-            result[:, pos:pos+length] = signals
-            scale = length / self.length
-            # transform center
-            bboxes[:, 0] = pos / self.length + bboxes[:, 0] * scale
-            # transform width
-            bboxes[:, 1] = bboxes[:, 1] * scale
-            return result, bboxes, labels
         else:
             # data is larger, need to crop
             pos = np.random.randint(0, length - self.length)
@@ -150,7 +135,35 @@ class RandomCrop(Module):
             bboxes[:, 1] = (x2[mask] - x1[mask]) * scale
             labels = labels[mask]
             return result, bboxes, labels
+
+class RandomPadding(Module):
+    def __init__(self, length: int):
+        """
+            Performs a random padding of signals to desired length. 
+        """
+        super().__init__()
+        self.length = length
         
+    def forward(self, signals: torch.Tensor, bboxes: torch.Tensor, labels: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+
+        length = signals.size(1)
+        if length >= self.length:
+            # padding is not needed
+            return signals, bboxes, labels
+        else: 
+            # data is shorter, need padding
+            # generate random position
+            pos = np.random.randint(0, self.length - length)
+            # tensor with zeros
+            result = torch.zeros((signals.size(0), self.length), dtype=signals.dtype)
+            result[:, pos:pos+length] = signals
+            scale = length / self.length
+            # transform center
+            bboxes[:, 0] = pos / self.length + bboxes[:, 0] * scale
+            # transform width
+            bboxes[:, 1] = bboxes[:, 1] * scale
+            return result, bboxes, labels   
+
 class RandomReverse(Module):
     
     def __init__(self, p=0.5):
@@ -321,7 +334,6 @@ class PhaseSpectrumNoise(Module):
         signals = torch.fft.irfft(spectrum, dim=-1)
         return signals, bboxes, labels
         
-    
 
 
 # TODO:

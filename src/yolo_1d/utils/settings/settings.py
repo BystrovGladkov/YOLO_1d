@@ -1,6 +1,27 @@
 from typing import List, Literal, Optional
 from pydantic import BaseModel, Field
 
+class AugmentationSettings(BaseModel):
+    regular_length: int = Field(50000, description="regular length of input signal, used to save aspect in validation transforms.")
+    input_length: int = Field(49152, description="Target input length of signal.")
+    
+    # параметры для train transform
+    mark_scaling: int = Field(300, ge=1, description="Scale used in MarkScaling.")
+    random_resize: float = Field(0.1, ge=0.0, description="RandomResize strength.")
+    
+    phase_spectrum_noise: float = Field(0.5, ge=0.0, description="Strength of phase spectrum noise.")
+    random_jitter: float = Field(0.6, ge=0.0, description="Strength of jitter.")
+    random_invert: float = Field(0.5, ge=0.0, le=1.0, description="Probability of sign inversion.")
+    random_reverse: float = Field(0.5, ge=0.0, le=1.0, description="Probability of time reversal.")
+    channel_scaling: float = Field(0.4, ge=0.0, description="Strength of channel scaling.")
+    time_masking: float = Field(0.2, ge=0.0, le=1.0, description="Max length of time masking.")
+    channel_masking: float = Field(0.1, ge=0.0, le=1.0, description="Probability of channel masking.")
+
+    # настройки для mixup / mosaic / adversarial
+    mosaic: float = Field(0.0, ge=0.0, le=1.0, description="Probability of mosaic augmentation.")
+    mix_up: float = Field(0.0, ge=0.0, le=1.0, description="Probability of mixup augmentation.")
+    mix_up_alpha: float = Field(20.0, ge=0.0, description="Beta distribution alpha for mixup.")
+    adversarial: float = Field(0.0, ge=0.0, le=1.0, description="Probability of adversarial batch.")
 
 class TrainingSettings(BaseModel):
     """
@@ -27,6 +48,7 @@ class TrainingSettings(BaseModel):
     num_workers: int = Field(0, description="Number of threads used in data loaders.")
     epochs: int = Field(10, ge=1, description="Number of Epochs of training.")
     batch_size: int = Field(32, ge=1, description="Size of batch in training.")
+    early_stopping_epochs: int = Field(0, ge=0, description="Number of epochs for early stop of training.")
 
     # loss settings
     weight_box: float = Field(7.5, ge=0.0, description="Weight of box loss (>= 0).")
@@ -43,10 +65,7 @@ class TrainingSettings(BaseModel):
     names: List[str] = Field(..., description="List of names of classes (labels).")
 
     # augmentations settings
-    mosaic: float = Field(0.0, ge=0.0, le=1.0, description="Probability of mosaic augmentation (0-1).")
-    mix_up: float = Field(0.0, ge=0.0, le=1.0, description="Probability of Mix-up augmentation (0-1).")
-    mix_up_alpha: float = Field(20, ge=0.0, description="Shape parameter for Beta distribution of mix-up coefficient.")
-    adversarial: float = Field(0.0, ge=0.0, le=1.0, description="Probability of adversarial batch (0-1).")
+    augmentations: AugmentationSettings = Field(default_factory=AugmentationSettings)
 
     class Config:
         str_strip_whitespace = True
