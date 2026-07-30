@@ -4,8 +4,7 @@ import torch
 import torch.nn as nn
 
 from yolo_1d.utils.util import make_anchors
-
-SIGNAL_LENGTH = 49152
+from yolo_1d.utils.constants import *
 
 def fuse_conv(conv, norm):
     fused_conv = torch.nn.Conv2d(conv.in_channels,
@@ -292,7 +291,7 @@ class Head(torch.nn.Module):
             # box
             box[-1].bias.data[:] = 1.0
             # cls (.01 objects, 80 classes, 640 image)
-            cls[-1].bias.data[:self.nc] = math.log(5 / self.nc / (SIGNAL_LENGTH / s) ** 2)
+            cls[-1].bias.data[:self.nc] = math.log(5 / self.nc / (INPUT_LENGTH / s) ** 2)
 
 
 class YOLO(torch.nn.Module):
@@ -302,15 +301,13 @@ class YOLO(torch.nn.Module):
         self.fpn = DarkFPN(width, depth, csp)
         
         # calculate biases
-        img_dummy = torch.zeros(1, input_channels, SIGNAL_LENGTH)
+        img_dummy = torch.zeros(1, input_channels, INPUT_LENGTH)
         self.head = Head(num_classes, (width[7], width[7], width[7]))
-        self.head.stride = torch.tensor([SIGNAL_LENGTH / x.shape[-1] for x in self.forward(img_dummy)])
+        self.head.stride = torch.tensor([INPUT_LENGTH / x.shape[-1] for x in self.forward(img_dummy)])
         self.stride = self.head.stride
         self.head.initialize_biases()
 
     def forward(self, x):
-        if x.shape[-1] != SIGNAL_LENGTH:
-            x = torch.nn.functional.interpolate(x, SIGNAL_LENGTH, mode='linear')
         x = self.net(x)
         x = self.fpn(x)
         return self.head(list(x))

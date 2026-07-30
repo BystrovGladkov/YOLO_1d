@@ -21,6 +21,7 @@ from yolo_1d.nets.criterion import ComputeLoss
 from yolo_1d.utils.dataset import Dataset
 from yolo_1d.utils.transforms import build_training_transforms, build_validation_transform
 from yolo_1d.utils.settings import TrainingSettings, get_default_settings, save_settings, read_settings
+from yolo_1d.utils.constants import *
 
 warnings.filterwarnings("ignore")
 
@@ -41,11 +42,6 @@ def first_available(dir_path:str, subdir:str) -> int:
         counter += 1
 
 class Trainer:
-    
-    # length on one signal sample
-    REGULAR_LENGTH = 50000
-    # length of network input
-    INPUT_LENGTH = 49152
     
     def __init__(self, settings: TrainingSettings=None):
         self._settings = settings
@@ -194,7 +190,7 @@ class Trainer:
         
         self._adversarial = self._settings.augmentations.adversarial
         # show summary
-        dummy_size = (self._settings.batch_size, 30, self.REGULAR_LENGTH)
+        dummy_size = (self._settings.batch_size, 30, REGULAR_LENGTH)
         print(summary(self._model, dummy_size))
         
         self._logger_path = os.path.join(self._project_path, 'step.csv')
@@ -467,13 +463,15 @@ class Trainer:
         outputs = self._ema.ema(data)
         outputs = util.non_max_suppression(outputs, conf)
         for out in outputs:
-            out[:, :2] = out[:, :2] / self.INPUT_LENGTH * self.REGULAR_LENGTH
+            out[:, :2] = out[:, :2] / INPUT_LENGTH * REGULAR_LENGTH
         return outputs
     
     def export_onnx(self, filename, opset=17):
-        example_input = (torch.randn((1, 30, self.REGULAR_LENGTH), device=self._device),)
+        from yolo_1d.nets.export import ExportWrapper
+        example_input = (torch.randn((1, 30, REGULAR_LENGTH), device=self._device),)
         self._ema.ema.eval()
-        torch.onnx.export(self._ema.ema, example_input,
+        wrapper = ExportWrapper(self._ema.ema)
+        torch.onnx.export(wrapper, example_input,
             f=filename,   
             input_names=["input"],
             output_names=["output"],
