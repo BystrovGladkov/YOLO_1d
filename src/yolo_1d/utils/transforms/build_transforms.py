@@ -1,8 +1,8 @@
 from torchvision.transforms.v2 import Compose
 
-from .transforms import Padding, Resize, RandomResize, RandomCrop, RandomPadding, RandomReverse, RandomJitter, RandomInvert, TimeMasking, ChannelMasking, ChannelScaling, MarkScaling, PhaseSpectrumNoise
+from .transforms import Padding, Resize, RandomResize, RandomCrop, RandomPadding, RandomReverse, RandomJitter, RandomInvert, TimeMasking, ChannelMasking, ChannelScaling, MarkScaling, PhaseSpectrumNoise, RandomApply
 from yolo_1d.utils.settings import AugmentationSettings
-
+from .square_noises import SquareNoises
 
 def build_training_transforms(settings: AugmentationSettings):
     ops = [
@@ -11,6 +11,8 @@ def build_training_transforms(settings: AugmentationSettings):
         RandomCrop(settings.input_length),
     ]
 
+    ops.append(RandomApply(SquareNoises(), p=0.1))
+    
     if settings.phase_spectrum_noise > 0:
         ops.append(PhaseSpectrumNoise(settings.phase_spectrum_noise))
     if settings.random_jitter > 0:

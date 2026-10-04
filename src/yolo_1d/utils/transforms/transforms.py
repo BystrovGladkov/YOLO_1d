@@ -334,7 +334,19 @@ class PhaseSpectrumNoise(Module):
         signals = torch.fft.irfft(spectrum, dim=-1)
         return signals, bboxes, labels
         
-
+class RandomApply(Module):
+    def __init__(self, augmentation: Module, p:float=0.5):
+            """
+                Applies augmentation with probability.
+            """
+            super().__init__()
+            self.augmentation = augmentation
+            self.p = p 
+            
+    def forward(self, signals: torch.Tensor, bboxes: torch.Tensor, labels: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if np.random.uniform(0, 1) < self.p:
+            signals, bboxes, labels = self.augmentation(signals, bboxes, labels)
+        return signals, bboxes, labels
 
 # TODO:
 # mix-up аугментация
@@ -353,3 +365,13 @@ class PhaseSpectrumNoise(Module):
 # Маскирование частот. - вырезать из спектра участки
 
 # Сделать разный лосс для разных объектов. Для коротких конструктивов фиксированной длины лосс считать как расстояние медлу центрами, а для 
+
+# ВЫрезать полезный сигнал и вставлять в другой
+
+# Обучать ACON 
+
+# Взять элементы из 12 YOLO 
+
+# Добавлять периодические модели
+
+# 

@@ -190,7 +190,7 @@ class Trainer:
         
         self._adversarial = self._settings.augmentations.adversarial
         # show summary
-        dummy_size = (self._settings.batch_size, 30, REGULAR_LENGTH)
+        dummy_size = (self._settings.batch_size, 30, INPUT_LENGTH)
         print(summary(self._model, dummy_size))
         
         self._logger_path = os.path.join(self._project_path, 'step.csv')
