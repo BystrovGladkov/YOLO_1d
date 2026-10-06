@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(python -c \"import dotenv; print\\('dotenv', dotenv.__version__ if hasattr\\(dotenv,'__version__'\\) else 'ok'\\)\")",
+      "Bash(python -m src.moodle_io.session)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(export PYTHONIOENCODING=utf-8)",
+      "Bash(python -c ' *)"
+    ]
+  }
+}
