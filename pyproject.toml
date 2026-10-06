@@ -7,7 +7,9 @@ name = "yolo_1d"
 version = "1.0.0"
 description = "Implementation of Yolo architecture for signals."
 authors = [{name = "Artemy Gladkov", email="gladkov.art76@gmail.com"}]
-dependencies=[]
+dependencies=[
+    "wfdb>=4.1",  # чтение LUDB (data/download_ludb.py)
+]
 
 
 [tool.setuptools.packages.find]

@@ -155,3 +155,5 @@ cython_debug/
 /uploads/*
 .vscode
 runs
+# datasets (downloaded by data/download_*.py)
+data/raw/
