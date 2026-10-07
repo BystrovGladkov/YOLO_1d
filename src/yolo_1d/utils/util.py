@@ -9,13 +9,13 @@ import torchvision
 from torch.nn.functional import cross_entropy
 
 
-def setup_seed():
+def setup_seed(seed: int = 0):
     """
     Setup random seed.
     """
-    random.seed(0)
-    numpy.random.seed(0)
-    torch.manual_seed(0)
+    random.seed(seed)
+    numpy.random.seed(seed)
+    torch.manual_seed(seed)
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
@@ -433,8 +433,10 @@ class CosineLR:
 
 class LinearLR:
     def __init__(self, min_lr:float, max_lr:float, warmup_epochs:int, epochs:int, num_steps:int):
-        warmup_steps = int(max(warmup_epochs * num_steps, 100))
-        decay_steps = int(epochs * num_steps - warmup_steps)
+        total_steps = int(epochs * num_steps)
+        # прогрев не длиннее всего обучения (иначе при коротких прогонах число шагов затухания < 0)
+        warmup_steps = min(int(max(warmup_epochs * num_steps, 100)), total_steps)
+        decay_steps = total_steps - warmup_steps
 
         warmup_lr = numpy.linspace(min_lr, max_lr, int(warmup_steps), endpoint=False)
         decay_lr = numpy.linspace(max_lr, min_lr, decay_steps)

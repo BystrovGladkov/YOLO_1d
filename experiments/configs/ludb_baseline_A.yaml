@@ -1,0 +1,52 @@
+# Baseline MyNet-1d на LUDB: вариант страйдов A {4, 16, 32}, nano, без аугментаций (заготовка для E1/E2).
+# Запуск: python run_experiment.py experiments/configs/ludb_baseline_A.yaml
+name: ludb_baseline_A
+description: "MyNet-1d nano, страйды A {4,16,32}, вход 1×5120 (полная запись + маскирование краёв), без аугментаций."
+dataset: data/splits/fold_{fold}.yaml
+manifest: data/processed/ludb/manifest.csv
+folds: [0, 1, 2, 3, 4]
+seeds: [0]
+
+training:
+  names: [P, QRS, T]
+  model_size: nano
+  input_channels: 1
+  backbone_strides: A
+  bias_init: 1d
+  expected_objects: 24
+
+  epochs: 150
+  batch_size: 32
+  num_workers: 0
+  early_stopping_epochs: 30
+  max_lr: 0.01
+  min_lr: 0.0001
+  warmup_epochs: 3
+
+  # EMA: при ~27 обновлениях за эпоху исходные decay=0.9999, tau=2000 дают сильно отстающую EMA-модель
+  ema_decay: 0.999
+  ema_tau: 200
+
+  # оценка и выбор best.pt (R2 §3): основная метрика F1_mean6 на val
+  delineation_metrics: true
+  delineation_conf: 0.25
+  best_metric: F1_mean6
+  nms_iou: 0.65
+
+  augmentations:
+    regular_length: 5000
+    input_length: 5120
+    validation_resize: false
+    square_noises: 0
+    # baseline: все аугментации выключены (у части полей по умолчанию вихретоковые значения)
+    random_resize: 0
+    phase_spectrum_noise: 0
+    random_jitter: 0
+    random_invert: 0
+    random_reverse: 0
+    channel_scaling: 0
+    time_masking: 0
+    channel_masking: 0
+    mosaic: 0
+    mix_up: 0
+    adversarial: 0

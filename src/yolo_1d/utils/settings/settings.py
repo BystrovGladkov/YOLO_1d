@@ -80,6 +80,22 @@ class TrainingSettings(BaseModel):
 
     names: List[str] = Field(..., description="List of names of classes (labels).")
 
+    # reproducibility and EMA
+    seed: int = Field(0, description="Random seed (python, numpy, torch).")
+    ema_decay: float = Field(0.9999, gt=0.0, lt=1.0, description="Final decay of EMA of model weights.")
+    ema_tau: float = Field(2000.0, gt=0.0, description="EMA warm-up: decay = ema_decay * (1 - exp(-updates / ema_tau)).")
+
+    # evaluation and model selection
+    nms_iou: float = Field(0.65, gt=0.0, le=1.0, description="IoU threshold of NMS.")
+    delineation_metrics: bool = Field(
+        False, description="Compute ECG delineation metrics (Se/PPV/F1, error in ms for 6 fiducials, "
+                           "yolo_1d.utils.delineation) on validation each epoch and log them to step.csv.")
+    delineation_conf: float = Field(0.25, ge=0.0, le=1.0,
+                                    description="Fixed confidence threshold for per-epoch delineation metrics.")
+    best_metric: Literal["val_loss", "mAP", "F1_mean6"] = Field(
+        "val_loss", description="Validation metric used to select best.pt: 'val_loss' (min), 'mAP' (max) or "
+                                "'F1_mean6' (max, ties broken by lower sd_mean6_ms; needs delineation_metrics).")
+
     # augmentations settings
     augmentations: AugmentationSettings = Field(default_factory=AugmentationSettings)
 
