@@ -133,3 +133,44 @@ def test_threshold_selection():
 def test_format_table():
     text = format_table(result_of(REF))
     assert "| QRS_on | 100.00 | 100.00 | 100.00 | 0.0 ± 0.0 |" in text and "⟨F1⟩₆ = 100.00 %" in text
+
+
+# ---------------------------------------------------------------- M5: точки без разметки
+def test_point_without_reference_is_undefined_and_reports_fp_per_lead():
+    ref_af = REF[REF[:, 0] != 0]  # «ФП»: P в разметке нет
+    pred = np.vstack([ref_af, [[0, 1000, 1050], [0, 1500, 1540]]])  # две ложные P
+    m = DelineationMetrics()
+    m.add(pred, ref_af, group="af")
+    m.add(REF, REF, group="sinus")
+    af = m.compute("af")
+    assert math.isnan(af["points"]["P_on"]["F1"]) and math.isnan(af["points"]["P_on"]["Se"])
+    assert af["points"]["P_on"]["FP_per_lead"] == 2
+    assert af["summary"]["F1_mean6"] == 1.0 and af["summary"]["n_defined"] == 4  # среднее по QRS и T
+    assert af["summary"]["n_leads"] == 1
+    # пулинг всех отведений: P определена (есть синусовое отведение), ложные P снижают PPV
+    all_ = m.compute()
+    assert all_["summary"]["n_defined"] == 6 and all_["summary"]["n_leads"] == 2
+    assert all_["points"]["P_on"]["PPV"] == pytest.approx(3 / 5)
+    assert "—" in format_table(af) and "по 4 определённым точкам" in format_table(af)
+
+
+def test_missed_points_with_reference_give_f1_zero():
+    m = DelineationMetrics()
+    m.add(REF[REF[:, 0] != 1], REF)  # все QRS пропущены
+    assert m.compute()["points"]["QRS_on"]["F1"] == 0.0
+
+
+def test_merge_accumulates_leads():
+    a, b = DelineationMetrics(), DelineationMetrics()
+    a.add(REF, REF)
+    b.add(REF, REF)
+    b.add(REF, REF)
+    assert a.merge(b).compute()["summary"]["n_leads"] == 3
+
+
+def test_thresholds_for_class_absent_on_val():
+    ref = REF[REF[:, 0] != 0]
+    pred = np.vstack([np.c_[ref, np.full(len(ref), 0.9)], [[0, 1000, 1050, 0.3]]])
+    thr = best_class_thresholds([(pred, ref)])
+    assert thr["P"][0] == pytest.approx(0.95)  # нет P-разметки: максимальный порог сетки
+    assert thr["QRS"][1] == 1

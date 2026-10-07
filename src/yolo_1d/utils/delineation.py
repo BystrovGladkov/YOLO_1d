@@ -113,12 +113,22 @@ class _Counts:
         self.fn += other.fn
         self.errors.extend(other.errors)
 
-    def summary(self) -> Dict[str, float]:
+    def summary(self, n_leads: int = 0) -> Dict[str, float]:
+        """Se, PPV, F1, счётчики и ошибки; FP_per_lead — ложные срабатывания на отведение.
+
+        Если в разметке нет ни одной точки (TP + FN = 0, например P при ФП), Se и F1 не определены
+        (NaN): качество такой точки описывает только FP_per_lead. Если разметка есть, но
+        предсказаний нет, F1 = 0.
+        """
         se = self.tp / (self.tp + self.fn) if self.tp + self.fn else float("nan")
         ppv = self.tp / (self.tp + self.fp) if self.tp + self.fp else float("nan")
-        f1 = 2 * se * ppv / (se + ppv) if se + ppv > 0 else 0.0
+        if self.tp + self.fn == 0:
+            f1 = float("nan")
+        else:
+            f1 = 2 * se * ppv / (se + ppv) if se + ppv > 0 else 0.0
         err = np.asarray(self.errors, float)
         return {"Se": se, "PPV": ppv, "F1": f1, "TP": self.tp, "FP": self.fp, "FN": self.fn,
+                "FP_per_lead": self.fp / n_leads if n_leads else float("nan"),
                 "mean_ms": float(err.mean()) if err.size else float("nan"),
                 "sd_ms": float(err.std()) if err.size else float("nan"),
                 "mae_ms": float(np.abs(err).mean()) if err.size else float("nan")}
@@ -147,6 +157,7 @@ class DelineationMetrics:
             lambda: {f: _Counts() for f in self.fiducials})
         self._waves: Dict[Optional[str], Dict[str, _Counts]] = defaultdict(
             lambda: {c: _Counts() for c in self.class_names})
+        self._leads: Dict[Optional[str], int] = defaultdict(int)  # число отведений (для FP_per_lead)
 
     def add(self, pred: np.ndarray, ref: np.ndarray, group: Optional[str] = None) -> None:
         """Добавляет одно отведение: pred (n, 3|4) [class, left, right(, conf)], ref (m, 3) [class, onset, offset]."""
@@ -156,6 +167,8 @@ class DelineationMetrics:
         if self.exclude_edges:
             pred = filter_to_zone(pred, ref, len(self.class_names))
         targets = [None] if group is None else [None, group]
+        for g in targets:
+            self._leads[g] += 1
         # граничные точки: onset первой и offset последней волны отведения (индексы в ref)
         boundary = {}
         if self.exclude_boundary_points and len(ref):
@@ -216,6 +229,8 @@ class DelineationMetrics:
         for g, counts in other._waves.items():
             for name, c in counts.items():
                 self._waves[g][name].add(c)
+        for g, n in other._leads.items():
+            self._leads[g] += n
         return self
 
     @property
@@ -223,15 +238,22 @@ class DelineationMetrics:
         return sorted(g for g in self._counts if g is not None)
 
     def compute(self, group: Optional[str] = None) -> Dict[str, object]:
-        """Метрики по 6 точкам, по волнам и сводка (для всех отведений или одной группы)."""
-        points = {f: c.summary() for f, c in self._counts[group].items()}
-        waves = {name: c.summary() for name, c in self._waves[group].items()}
+        """Метрики по 6 точкам, по волнам и сводка (для всех отведений или одной группы).
+
+        Сводные средние (F1_mean6, sd_mean6_ms, mae_mean6_ms, cse_fraction) берутся по точкам, для
+        которых метрика определена; n_defined — число таких точек (F1 определён), n_leads — отведений.
+        """
+        n_leads = self._leads[group]
+        points = {f: c.summary(n_leads) for f, c in self._counts[group].items()}
+        waves = {name: c.summary(n_leads) for name, c in self._waves[group].items()}
         f1 = [points[f]["F1"] for f in self.fiducials]
         sd = [points[f]["sd_ms"] for f in self.fiducials]
         mae = [points[f]["mae_ms"] for f in self.fiducials]
-        cse = [points[f]["sd_ms"] <= limit for f, limit in CSE_2SIGMA_MS.items() if f in points]
-        summary = {"F1_mean6": float(np.mean(f1)), "sd_mean6_ms": _nanmean(sd), "mae_mean6_ms": _nanmean(mae),
-                   "cse_fraction": float(np.mean(cse)) if cse else float("nan")}
+        cse = [points[f]["sd_ms"] <= limit for f, limit in CSE_2SIGMA_MS.items()
+               if f in points and not np.isnan(points[f]["sd_ms"])]
+        summary = {"F1_mean6": _nanmean(f1), "sd_mean6_ms": _nanmean(sd), "mae_mean6_ms": _nanmean(mae),
+                   "cse_fraction": float(np.mean(cse)) if cse else float("nan"),
+                   "n_defined": int(np.sum(~np.isnan(f1))), "n_leads": n_leads}
         return {"points": points, "waves": waves, "summary": summary}
 
 
@@ -286,7 +308,9 @@ def best_class_thresholds(samples: Iterable[Tuple[np.ndarray, np.ndarray]],
                 metrics.add(pred[keep], ref)
             points = metrics.compute()["points"]
             scores.append((points[f"{name}_on"]["F1"] + points[f"{name}_off"]["F1"]) / 2)
-        k = int(np.argmax(scores))
+        # класс без разметки на val (F1 не определён): порог по минимуму ложных срабатываний — максимальный
+        scores = np.nan_to_num(np.asarray(scores, float), nan=-1.0)
+        k = int(np.argmax(scores)) if np.any(scores >= 0) else len(grid) - 1
         best[name] = (float(grid[k]), float(scores[k]))
     return best
 
@@ -302,12 +326,20 @@ def apply_thresholds(pred: np.ndarray, thresholds: Dict[str, Tuple[float, float]
 
 
 def format_table(result: Dict[str, object]) -> str:
-    """Таблица Markdown: Se / PPV / F1 / m ± σ по 6 точкам + сводка."""
-    lines = ["| Точка | Se, % | PPV, % | F1, % | m ± σ, мс |", "|---|---|---|---|---|"]
+    """Таблица Markdown: Se / PPV / F1 / m ± σ / FP на отведение по 6 точкам + сводка.
+
+    Не определённые значения (нет разметки или нет совпадений) выводятся как «—».
+    """
+    pct = lambda v: "—" if np.isnan(v) else f"{100 * v:.2f}"  # noqa: E731
+    lines = ["| Точка | Se, % | PPV, % | F1, % | m ± σ, мс | FP/отв. |", "|---|---|---|---|---|---|"]
     for f, p in result["points"].items():
-        lines.append(f"| {f} | {100 * p['Se']:.2f} | {100 * p['PPV']:.2f} | {100 * p['F1']:.2f} | "
-                     f"{p['mean_ms']:.1f} ± {p['sd_ms']:.1f} |")
+        err = "—" if np.isnan(p["mean_ms"]) else f"{p['mean_ms']:.1f} ± {p['sd_ms']:.1f}"
+        fp = "—" if np.isnan(p.get("FP_per_lead", float("nan"))) else f"{p['FP_per_lead']:.3f}"
+        lines.append(f"| {f} | {pct(p['Se'])} | {pct(p['PPV'])} | {pct(p['F1'])} | {err} | {fp} |")
     s = result["summary"]
-    lines.append(f"\n⟨F1⟩₆ = {100 * s['F1_mean6']:.2f} %, ⟨σ⟩₆ = {s['sd_mean6_ms']:.1f} мс, "
-                 f"⟨|m|⟩₆ = {s['mae_mean6_ms']:.1f} мс, σ ≤ 2σ_CSE: {100 * s['cse_fraction']:.0f} % точек")
+    n = s.get("n_defined", len(result["points"]))
+    note = "" if n == len(result["points"]) else f" (по {n} определённым точкам)"
+    cse = "—" if np.isnan(s["cse_fraction"]) else f"{100 * s['cse_fraction']:.0f} %"
+    lines.append(f"\n⟨F1⟩₆ = {pct(s['F1_mean6'])} %{note}, ⟨σ⟩₆ = {s['sd_mean6_ms']:.1f} мс, "
+                 f"⟨|m|⟩₆ = {s['mae_mean6_ms']:.1f} мс, σ ≤ 2σ_CSE: {cse} точек")
     return "\n".join(lines)
