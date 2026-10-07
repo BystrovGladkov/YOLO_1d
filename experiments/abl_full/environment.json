@@ -1,0 +1,12 @@
+{
+  "date": "2026-10-07T19:10:00",
+  "command": "run_experiment.py experiments/configs/abl_full.yaml",
+  "git_hash": "6a549240c1586f0eee09e2e32c58f442cccab414",
+  "git_branch": "EKG",
+  "git_dirty": true,
+  "python": "3.11.9",
+  "torch": "2.7.1+cu128",
+  "cuda": "12.8",
+  "gpu": "NVIDIA GeForce RTX 5060 Ti",
+  "platform": "Windows-10-10.0.19045-SP0"
+}

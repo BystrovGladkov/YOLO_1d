@@ -44,6 +44,14 @@ def first_available(dir_path:str, subdir:str) -> int:
         
         counter += 1
 
+def _seed_worker(worker_id: int) -> None:
+    """Сид numpy и random воркера DataLoader из его torch-сида (torch сидирует воркеры сам)."""
+    import random
+    seed = torch.initial_seed() % 2 ** 32
+    np.random.seed(seed)
+    random.seed(seed)
+
+
 class Trainer:
     
     def __init__(self, settings: TrainingSettings=None):
@@ -119,12 +127,16 @@ class Trainer:
                                     num_samples=self._train_dataset.n, replacement=True)
         
         # create dataloaders
-        self._train_loader = data.DataLoader(self._train_dataset, self._settings.batch_size, 
-                                num_workers=self._settings.num_workers, pin_memory=True, collate_fn=Dataset.collate_fn, sampler=sampler)        
-        self._val_loader = data.DataLoader(self._val_dataset, self._settings.batch_size, shuffle=False,
-                                num_workers=self._settings.num_workers, pin_memory=True, collate_fn=Dataset.collate_fn)
-        self._test_loader = data.DataLoader(self._test_dataset, self._settings.batch_size, shuffle=False,
-                                num_workers=self._settings.num_workers, pin_memory=True, collate_fn=Dataset.collate_fn)
+        # при num_workers > 0: воркеры живут всё обучение (на Windows запуск воркера дорогой), а numpy и
+        # random в каждом воркере сидируются от torch-сида воркера — аугментации воспроизводимы
+        workers = self._settings.num_workers
+        loader_kwargs = dict(num_workers=workers, pin_memory=True, collate_fn=Dataset.collate_fn)
+        if workers > 0:
+            loader_kwargs.update(persistent_workers=True, worker_init_fn=_seed_worker)
+        self._train_loader = data.DataLoader(self._train_dataset, self._settings.batch_size, sampler=sampler,
+                                             **loader_kwargs)
+        self._val_loader = data.DataLoader(self._val_dataset, self._settings.batch_size, shuffle=False, **loader_kwargs)
+        self._test_loader = data.DataLoader(self._test_dataset, self._settings.batch_size, shuffle=False, **loader_kwargs)
 
     def _init_training(self):
         """
