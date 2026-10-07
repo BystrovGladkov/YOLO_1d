@@ -1,22 +1,25 @@
 """Подготовка LUDB для обучения MyNet-1d: поотведенческие примеры в формате `Dataset`.
 
 Для каждого из 200 × 12 отведений (режим S, решение пользователя от 2026-10-07):
-- Z-score по всему отведению (опционально — полосовой фильтр до него);
-- обнуление сигнала вне размеченной зоны `[first_onset − δ, last_offset + δ]`;
+- Z-score по всему отведению (опционально — полосовой фильтр до него); сигнал сохраняется без маски;
+- границы размеченной зоны (первый onset, последний offset) — в манифест (`annot_start`, `annot_end`);
+  неразмеченные края обнуляются при загрузке (`EdgeMask`, D5: случайный запас на train, фиксированный на val);
 - разметка в формате `class center width` (доли длины 5000), классы P = 0, QRS = 1, T = 2.
 
 Отведения с дефектной разметкой внутри зоны (волна в сигнале без метки, см. D2) исключаются
 из всех выборок по умолчанию; они остаются в манифесте с причиной (`--keep-defective` — оставить).
+Зона для этой проверки расширяется на максимальный запас маски (`--max-margin`, 24 отсчёта).
 
 Выход (`data/processed/ludb/`, в git не хранится):
     signals/<запись>_<отведение>.pt   torch.float32, форма (1, 5000)
     labels/<запись>_<отведение>.txt   строки "class center width"
-    manifest.csv                      все 2400 отведений: зона, число волн, группа ритма, usable/причина
+    manifest.csv                      все 2400 отведений: annot_start/annot_end, число волн, группа ритма,
+                                      usable/причина (служит и файлом зон для Dataset, ключ `zones`)
     preprocessing.json                параметры и итоговые счётчики
 и конфиг `data/ludb.yaml` (имена классов и пути; разбиения добавляет D4).
 
 Использование:
-    python data/prepare_ludb.py [--margin 10] [--bandpass 0.5 100] [--fill zero|median] [--keep-defective]
+    python data/prepare_ludb.py [--max-margin 24] [--bandpass 0.5 100] [--keep-defective]
 """
 import argparse
 import csv
@@ -33,9 +36,9 @@ import yaml
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))  # модули этого репозитория, а не установленной копии пакета
 from yolo_1d.utils.ludb import CLASS_NAMES, LEADS, SIGNAL_LENGTH, iter_records, rhythm_group  # noqa: E402
-from yolo_1d.utils.ludb_preprocess import DEFAULT_ZONE_MARGIN, prepare_lead, unusable_reason  # noqa: E402
+from yolo_1d.utils.ludb_preprocess import annotated_zone, prepare_lead, unusable_reason  # noqa: E402
 
-MANIFEST_FIELDS = ["sample_id", "record", "lead", "rhythm_group", "zone_start", "zone_end",
+MANIFEST_FIELDS = ["sample_id", "record", "lead", "rhythm_group", "annot_start", "annot_end",
                    "n_P", "n_QRS", "n_T", "issues", "usable", "reason"]
 
 
@@ -68,12 +71,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--root", type=Path, default=REPO / "data" / "raw" / "ludb")
     parser.add_argument("--out", type=Path, default=REPO / "data" / "processed" / "ludb")
-    parser.add_argument("--margin", type=int, default=DEFAULT_ZONE_MARGIN,
-                        help="запас вокруг размеченной зоны, отсчётов (по умолчанию 10 = 20 мс)")
+    parser.add_argument("--max-margin", type=int, default=24,
+                        help="максимальный запас маски краёв, отсчётов: зона проверки дефектной разметки")
     parser.add_argument("--bandpass", type=float, nargs=2, metavar=("LOW", "HIGH"), default=None,
                         help="полосовой фильтр до Z-score, Гц (по умолчанию выключен)")
-    parser.add_argument("--fill", choices=["zero", "median"], default="zero",
-                        help="заполнение вне размеченной зоны: нули (принято) или медиана отведения в зоне")
     parser.add_argument("--keep-defective", action="store_true",
                         help="не исключать отведения с дефектной разметкой внутри зоны")
     parser.add_argument("--config", type=Path, default=REPO / "data" / "ludb.yaml")
@@ -96,13 +97,14 @@ def main() -> int:
         group = rhythm_group(rec.meta)
         for lead_index, lead in enumerate(LEADS):
             sample_id = f"{rec.name}_{lead}"
-            sample = prepare_lead(rec.signal[lead_index], rec.waves[lead], args.margin, band, args.fill)
-            reason = unusable_reason([i.sample for i in rec.dropped(lead)], sample.zone)
+            sample = prepare_lead(rec.signal[lead_index], rec.waves[lead], band)
+            check_zone = annotated_zone(rec.waves[lead], SIGNAL_LENGTH, args.max_margin)
+            reason = unusable_reason([i.sample for i in rec.dropped(lead)], check_zone)
             usable = reason is None or args.keep_defective
             counts = {name: sum(w.cls == name for w in rec.waves[lead]) for name in CLASS_NAMES}
             rows.append({
                 "sample_id": sample_id, "record": rec.name, "lead": lead, "rhythm_group": group,
-                "zone_start": sample.zone[0], "zone_end": sample.zone[1],
+                "annot_start": sample.annotated[0], "annot_end": sample.annotated[1],
                 **{f"n_{name}": n for name, n in counts.items()},
                 "issues": ";".join(sorted({i.kind for i in rec.issues[lead]})),
                 "usable": int(usable), "reason": reason or "",
@@ -125,10 +127,9 @@ def main() -> int:
         "source": str(args.root.relative_to(REPO)) if args.root.is_relative_to(REPO) else str(args.root),
         "mode": "single_lead",
         "signal_length": SIGNAL_LENGTH,
-        "zone_margin_samples": args.margin,
+        "max_mask_margin_samples": args.max_margin,
         "bandpass_hz": list(band) if band else None,
-        "outside_zone_fill": args.fill,
-        "normalization": "z-score per lead over the whole record, then zeros outside annotated zone",
+        "normalization": "z-score per lead over the whole record; edge mask applied on load (EdgeMask, D5)",
         "label_format": "class center width, normalized by signal_length; left = onset, right = offset",
         "classes": CLASS_NAMES,
         "keep_defective": args.keep_defective,

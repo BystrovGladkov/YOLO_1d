@@ -134,7 +134,10 @@ def metrics_from_run(run_dir: Path, groups: dict) -> DelineationMetrics:
     thresholds = json.loads((run_dir / "thresholds.json").read_text(encoding="utf-8"))
     thresholds = {k: (v["conf"], v["val_F1"]) for k, v in thresholds.items()}
     names = list(thresholds)
-    metrics = DelineationMetrics(class_names=names)
+    # тот же режим граничных точек, что и в прогоне (в прогонах до D5 поля нет — они считались без исключения)
+    run_metrics = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))
+    exclude = bool(run_metrics.get("exclude_boundary_points", False))
+    metrics = DelineationMetrics(class_names=names, exclude_boundary_points=exclude)
     for s in json.loads((run_dir / "predictions_test.json").read_text(encoding="utf-8")):
         pred = np.asarray(s["pred"], float).reshape(-1, 4)
         metrics.add(apply_thresholds(pred, thresholds, names), np.asarray(s["ref"], float).reshape(-1, 3),

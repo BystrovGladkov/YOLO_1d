@@ -22,7 +22,7 @@ from yolo_1d.nets.criterion import ComputeLoss
 from yolo_1d.utils.dataset import Dataset
 from yolo_1d.utils.delineation import (DelineationMetrics, apply_thresholds, best_class_thresholds,
                                        boxes_to_intervals, detections_to_intervals, format_table)
-from yolo_1d.utils.transforms import build_training_transforms, build_validation_transform
+from yolo_1d.utils.transforms import EdgeMask, build_training_transforms, build_validation_transform
 from yolo_1d.utils.settings import TrainingSettings, get_default_settings, save_settings, read_settings
 from yolo_1d.utils.constants import *
 
@@ -95,13 +95,22 @@ class Trainer:
         # if fields already initialized - exit
         if hasattr(self, "_train_dataset"):
             return
+        # маскирование неразмеченных краёв (только для датасетов с ключом `zones`): случайный запас на train,
+        # фиксированный на val/test (D5)
+        aug = self._settings.augmentations
+        train_mask = EdgeMask(aug.edge_margin_start, aug.edge_margin_end)
+        start, end = aug.edge_margin_eval
+        eval_mask = EdgeMask((start, start), (end, end))
         # load dataset
         self._train_dataset = Dataset(self._settings.dataset, transform=self._train_transform, type="train", 
                                       mosaic_prob=self._settings.augmentations.mosaic,
                                       mix_up_prob=self._settings.augmentations.mix_up,
-                                      mix_up_alpha=self._settings.augmentations.mix_up_alpha)
-        self._val_dataset = Dataset(self._settings.dataset, transform=self._test_transform, type="val")
-        self._test_dataset = Dataset(self._settings.dataset, transform=self._test_transform, type="test")
+                                      mix_up_alpha=self._settings.augmentations.mix_up_alpha,
+                                      edge_mask=train_mask)
+        self._val_dataset = Dataset(self._settings.dataset, transform=self._test_transform, type="val",
+                                    edge_mask=eval_mask)
+        self._test_dataset = Dataset(self._settings.dataset, transform=self._test_transform, type="test",
+                                     edge_mask=eval_mask)
         
         weights = util.get_data_weights(self._train_dataset)
         sampler = torch.utils.data.WeightedRandomSampler(weights=weights,
@@ -462,7 +471,8 @@ class Trainer:
         # Print results
         self._print_detection_results(r, per_class)
         if self._settings.delineation_metrics:
-            metrics = DelineationMetrics(class_names=self._settings.names)
+            metrics = DelineationMetrics(class_names=self._settings.names,
+                                         exclude_boundary_points=self._settings.exclude_boundary_points)
             for pred, ref in self._to_intervals(per_sample, self._settings.augmentations.input_length):
                 metrics.add(pred[pred[:, 3] >= self._settings.delineation_conf], ref)
             result = metrics.compute()
@@ -518,14 +528,22 @@ class Trainer:
         """
         groups = groups or {}
         val, _ = self.collect_predictions("val")
-        thresholds = best_class_thresholds([(s["pred"], s["ref"]) for s in val], class_names=self._settings.names)
+        exclude = self._settings.exclude_boundary_points
+        thresholds = best_class_thresholds([(s["pred"], s["ref"]) for s in val], class_names=self._settings.names,
+                                           exclude_boundary_points=exclude)
         test, detection = self.collect_predictions("test")
-        metrics = DelineationMetrics(class_names=self._settings.names)
+        metrics = DelineationMetrics(class_names=self._settings.names, exclude_boundary_points=exclude)
+        # вариант без исключения граничных точек — для прозрачности (D5)
+        metrics_all = DelineationMetrics(class_names=self._settings.names, exclude_boundary_points=False)
         for s in test:
-            metrics.add(apply_thresholds(s["pred"], thresholds, self._settings.names), s["ref"], group=groups.get(s["id"]))
+            pred = apply_thresholds(s["pred"], thresholds, self._settings.names)
+            metrics.add(pred, s["ref"], group=groups.get(s["id"]))
+            metrics_all.add(pred, s["ref"])
         result = {
             "thresholds": {k: {"conf": v[0], "val_F1": v[1]} for k, v in thresholds.items()},
+            "exclude_boundary_points": exclude,
             "test": metrics.compute(),
+            "test_with_boundary_points": metrics_all.compute(),
             "test_by_group": {g: metrics.compute(g) for g in metrics.groups},
             "test_detection": {k: float(v) for k, v in detection.items()},
             "n_test": len(test), "n_val": len(val),

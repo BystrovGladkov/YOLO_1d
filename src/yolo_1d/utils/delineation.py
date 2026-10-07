@@ -15,6 +15,12 @@ onset = left, offset = right (P_on, P_off, QRS_on, QRS_off, T_on, T_off). Для
 Если волн класса c в отведении нет (например, P при ФП), берётся зона по всем классам —
 тогда ложные детекции этого класса внутри записи честно считаются FP.
 
+Граничные точки (D5, опция `exclude_boundary_points`): onset первой и offset последней волны
+отведения соседствуют с границей маскирования неразмеченных краёв, и их точность завышена подсказкой
+«нули → сигнал» (E1 §3). При включённой опции эти точки разметки, сопоставленные с ними предсказания
+и несопоставленные предсказания в пределах допуска от них не учитываются (аналог удаления крайних
+кардиоциклов у Moskalenko et al. 2020).
+
 Основная метрика абляции — ⟨F1⟩₆ (среднее F1 по 6 точкам), вторичная — ⟨σ⟩₆ (R2 §3.3).
 
 Формат входа (все координаты — в отсчётах исходного сигнала 500 Гц):
@@ -130,10 +136,11 @@ class DelineationMetrics:
     """
 
     def __init__(self, fs: int = FS, tolerance_ms: float = TOLERANCE_MS, exclude_edges: bool = True,
-                 class_names: Sequence[str] = CLASS_NAMES):
+                 class_names: Sequence[str] = CLASS_NAMES, exclude_boundary_points: bool = False):
         self.fs = fs
         self.tolerance = tolerance_ms * fs / 1000  # в отсчётах
         self.exclude_edges = exclude_edges
+        self.exclude_boundary_points = exclude_boundary_points
         self.class_names = tuple(class_names)
         self.fiducials = tuple(f"{c}_{e}" for c in self.class_names for e in ("on", "off"))
         self._counts: Dict[Optional[str], Dict[str, _Counts]] = defaultdict(
@@ -149,17 +156,38 @@ class DelineationMetrics:
         if self.exclude_edges:
             pred = filter_to_zone(pred, ref, len(self.class_names))
         targets = [None] if group is None else [None, group]
+        # граничные точки: onset первой и offset последней волны отведения (индексы в ref)
+        boundary = {}
+        if self.exclude_boundary_points and len(ref):
+            boundary = {1: int(np.argmin(ref[:, 1])), 2: int(np.argmax(ref[:, 2]))}
         for c, name in enumerate(self.class_names):
-            pc, rc = pred[pred[:, 0] == c], ref[ref[:, 0] == c]
+            idx = np.nonzero(ref[:, 0] == c)[0]
+            pc, rc = pred[pred[:, 0] == c], ref[idx]
             for col, edge in ((1, "on"), (2, "off")):
                 pairs, err = match_points(pc[:, col], rc[:, col], self.tolerance)
-                counts = _Counts(len(pairs), len(pc) - len(pairs), len(rc) - len(pairs),
-                                 list(err * 1000 / self.fs))
+                excluded = np.nonzero(idx == boundary[col])[0] if col in boundary else np.zeros(0, int)
+                counts = self._count(pc[:, col], rc[:, col], pairs, err, excluded)
                 for g in targets:
                     self._counts[g][f"{name}_{edge}"].add(counts)
             wave = self._match_waves(pc, rc)
             for g in targets:
                 self._waves[g][name].add(wave)
+
+    def _count(self, pred_pts, ref_pts, pairs, err, excluded) -> _Counts:
+        """TP/FP/FN и ошибки точки; точки разметки `excluded` и связанные с ними предсказания
+        (сопоставленные или лежащие в пределах допуска) не учитываются."""
+        if len(excluded) == 0:
+            return _Counts(len(pairs), len(pred_pts) - len(pairs), len(ref_pts) - len(pairs),
+                           list(err * 1000 / self.fs))
+        excluded = set(int(e) for e in excluded)
+        keep = np.array([int(r) not in excluded for r in pairs[:, 1]], bool) if len(pairs) else np.zeros(0, bool)
+        matched_pred = set(int(p) for p in pairs[:, 0])
+        near = np.abs(np.asarray(pred_pts)[:, None] - np.asarray(ref_pts)[sorted(excluded)][None, :]) <= self.tolerance
+        ignored_pred = {i for i in range(len(pred_pts)) if i not in matched_pred and near[i].any()}
+        tp = int(keep.sum())
+        fp = len(pred_pts) - len(matched_pred) - len(ignored_pred)
+        fn = len(ref_pts) - len(excluded) - tp
+        return _Counts(tp, fp, fn, list(err[keep] * 1000 / self.fs))
 
     @staticmethod
     def _match_waves(pc: np.ndarray, rc: np.ndarray) -> _Counts:

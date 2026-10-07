@@ -11,6 +11,13 @@ class AugmentationSettings(BaseModel):
                           "eddy-current data) or only pad to input_length without changing time scale (False, ECG).")
     square_noises: float = Field(0.1, ge=0.0, le=1.0,
                                  description="Probability of SquareNoises (eddy-current specific, needs 30 channels).")
+    # Маскирование неразмеченных краёв записи (D5; действует, только если в yaml датасета задан ключ `zones`)
+    edge_margin_start: List[int] = Field([0, 12], min_length=2, max_length=2,
+                                         description="Train: range (min, max) of mask margin before first onset, samples.")
+    edge_margin_end: List[int] = Field([0, 24], min_length=2, max_length=2,
+                                       description="Train: range (min, max) of mask margin after last offset, samples.")
+    edge_margin_eval: List[int] = Field([6, 12], min_length=2, max_length=2,
+                                        description="Validation/test: fixed mask margins (before first onset, after last offset).")
 
     # параметры для train transform
     mark_scaling: int = Field(300, ge=1, description="Scale used in MarkScaling.")
@@ -90,6 +97,9 @@ class TrainingSettings(BaseModel):
     delineation_metrics: bool = Field(
         False, description="Compute ECG delineation metrics (Se/PPV/F1, error in ms for 6 fiducials, "
                            "yolo_1d.utils.delineation) on validation each epoch and log them to step.csv.")
+    exclude_boundary_points: bool = Field(
+        True, description="Delineation metrics: ignore fiducials adjacent to the edge mask (onset of the first and "
+                          "offset of the last wave of a lead) and predictions matched to them (D5).")
     delineation_conf: float = Field(0.25, ge=0.0, le=1.0,
                                     description="Fixed confidence threshold for per-epoch delineation metrics.")
     best_metric: Literal["val_loss", "mAP", "F1_mean6"] = Field(

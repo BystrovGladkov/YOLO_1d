@@ -58,16 +58,17 @@ def test_labels_roundtrip():
     assert waves_to_labels([], 5000).shape == (0, 3)
 
 
-def test_prepare_lead_masks_edges_after_zscore():
+def test_prepare_lead_zscore_without_mask():
+    """D5: сигнал сохраняется без маски (маска — при загрузке), рядом — границы разметки."""
     rng = np.random.default_rng(0)
     signal = rng.normal(2.0, 3.0, 5000)
-    sample = prepare_lead(signal, WAVES, margin=10)
+    sample = prepare_lead(signal, WAVES)
     assert sample.signal.shape == (1, 5000) and sample.signal.dtype == np.float32
-    assert sample.zone == (90, 411)
-    assert np.all(sample.signal[0, :90] == 0) and np.all(sample.signal[0, 411:] == 0)
-    # Z-score считается по всему отведению до маскирования
-    expected = (signal[90:411] - signal.mean()) / signal.std()
-    assert np.allclose(sample.signal[0, 90:411], expected, atol=1e-4)
+    assert sample.annotated == (100, 400)
+    expected = (signal - signal.mean()) / signal.std()  # Z-score по всему отведению
+    assert np.allclose(sample.signal[0], expected, atol=1e-4)
+    with pytest.raises(ValueError):
+        prepare_lead(signal, [])
 
 
 def test_bandpass_removes_baseline():

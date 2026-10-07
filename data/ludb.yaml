@@ -1,6 +1,6 @@
 # LUDB для MyNet-1d: сгенерировано data/prepare_ludb.py.
 # Поотведенческие примеры (вход 1 × 5000, паддинг до 5120 в трансформациях).
-# Разбиения train/val/test (ключи <split>_data, <split>_labels) добавляет D4 (data/splits/).
+# Разбиения train/val/test — data/splits/fold_<k>.yaml (data/make_splits.py).
 path: .
 names:
   0: P

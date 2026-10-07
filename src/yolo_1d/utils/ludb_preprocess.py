@@ -1,11 +1,12 @@
-"""Предобработка LUDB для детекции: Z-score, маскирование неразмеченных краёв, перевод разметки в боксы.
+"""Предобработка LUDB для детекции: Z-score, границы размеченной зоны, перевод разметки в боксы.
 
 Принятые решения (TASKS.md, «Принятые решения»; docs/research/R1_ludb.md §4.1–4.2):
 - детекция **поотведенческая** (режим S): пример = одно отведение одной записи, вход 1 × 5000;
 - каждый пример — полная запись, без кропов; паддинг до 5120 делают трансформации;
-- Z-score по всему отведению, затем значения вне размеченной зоны
-  `[first_onset − δ, last_offset + δ]` заменяются нулями (δ = 10 отсчётов = 20 мс):
-  неразмеченные волны на краях не попадают в сеть, лосс не меняется;
+- Z-score по всему отведению; сигнал сохраняется **без маски**, а рядом — границы размеченной
+  зоны (первый onset, последний offset). Значения вне `[first_onset − δ, last_offset + δ]` обнуляются
+  уже при загрузке (`yolo_1d.utils.transforms.EdgeMask`, D5): на обучении δ случайный, чтобы граница
+  маски не служила подсказкой (E1 §3), на валидации — фиксированный; лосс не меняется;
 - боксы в формате репозитория: `class center width`, нормированные на длину сигнала (5000),
   классы P = 0, QRS = 1, T = 2.
 """
@@ -17,16 +18,16 @@ from scipy.signal import butter, sosfiltfilt
 
 from yolo_1d.utils.ludb import FS, Wave
 
-# запас вокруг размеченной зоны, отсчётов (20 мс при 500 Гц)
+# запас вокруг размеченной зоны, отсчётов (20 мс при 500 Гц); используется в проверках и тестах
 DEFAULT_ZONE_MARGIN = 10
 
 
 @dataclass(frozen=True)
 class LeadSample:
     """Готовый пример одного отведения."""
-    signal: np.ndarray            # (1, length) float32: Z-score, вне зоны — нули
+    signal: np.ndarray            # (1, length) float32: Z-score, без маски
     labels: np.ndarray            # (n, 3) float64: class, center, width (доли длины)
-    zone: Tuple[int, int]         # [start, end) — размеченная зона с запасом, в отсчётах
+    annotated: Tuple[int, int]    # (первый onset, последний offset) разметки, в отсчётах (включительно)
 
 
 def bandpass(signal: np.ndarray, low: float, high: float, fs: int = FS, order: int = 2) -> np.ndarray:
@@ -90,8 +91,8 @@ def labels_to_intervals(labels: np.ndarray, length: int) -> np.ndarray:
     return np.stack([cls, center - width / 2, center + width / 2], axis=1)
 
 
-def prepare_lead(signal: np.ndarray, waves: Sequence[Wave], margin: int = DEFAULT_ZONE_MARGIN,
-                 band: Optional[Tuple[float, float]] = None, fill: str = "zero") -> LeadSample:
+def prepare_lead(signal: np.ndarray, waves: Sequence[Wave],
+                 band: Optional[Tuple[float, float]] = None) -> LeadSample:
     """Полная предобработка одного отведения.
 
     Parameters
@@ -100,26 +101,25 @@ def prepare_lead(signal: np.ndarray, waves: Sequence[Wave], margin: int = DEFAUL
         Сигнал отведения (length,) в мВ.
     waves
         Волны отведения (yolo_1d.utils.ludb.LudbRecord.waves[lead]).
-    margin
-        Запас вокруг размеченной зоны, отсчётов.
     band
         (low, high) Гц для полосового фильтра до Z-score или None — без фильтрации.
-    fill
-        Чем заполнять сигнал вне зоны: "zero" (по умолчанию) или "median" (см. `mask_outside`).
     """
+    if not waves:
+        raise ValueError("нет размеченных волн — зону определить нельзя")
     x = np.asarray(signal, dtype=np.float32)[None, :]
     if band is not None:
         x = bandpass(x, *band)
     x = zscore(x)
-    zone = annotated_zone(waves, x.shape[-1], margin)
-    return LeadSample(mask_outside(x, zone, fill), waves_to_labels(waves, x.shape[-1]), zone)
+    annotated = (min(w.onset for w in waves), max(w.offset for w in waves))
+    return LeadSample(x, waves_to_labels(waves, x.shape[-1]), annotated)
 
 
 def unusable_reason(dropped_samples: List[int], zone: Tuple[int, int]) -> Optional[str]:
     """Причина исключить отведение: отброшенная (дефектная) волна внутри размеченной зоны.
 
     Такая волна есть в сигнале, но не имеет метки — сеть училась бы считать её фоном (D2).
-    Отброшенные волны вне зоны безвредны: они обнуляются маскированием.
+    Отброшенные волны вне зоны безвредны: они обнуляются маскированием. Проверять с зоной,
+    расширенной на максимальный запас маски (`annotated_zone(..., margin=max δ)`).
     """
     start, end = zone
     inside = [s for s in dropped_samples if start <= s < end]

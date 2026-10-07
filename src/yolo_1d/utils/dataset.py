@@ -1,4 +1,5 @@
 from typing import Tuple, Literal
+import csv
 import math
 import os
 import random
@@ -16,9 +17,17 @@ class Dataset(data.Dataset):
     def __init__(self, filename, transform, type: Literal["train", "val", "test"],
                  mosaic_prob=0,
                  mix_up_prob=0,
-                 mix_up_alpha=20):
+                 mix_up_alpha=20,
+                 edge_mask=None):
+        """
+            edge_mask
+                Callable (signal, annotated) -> signal, например `transforms.EdgeMask`: маскирует
+                неразмеченные края записи при загрузке. Применяется, только если в yaml задан ключ
+                `zones` (CSV с колонками sample_id, annot_start, annot_end); иначе сигнал не меняется.
+        """
         super().__init__()
         self.transform = transform
+        self.edge_mask = edge_mask
         self.mosaic_prob = mosaic_prob
         self.mix_up_prob = mix_up_prob
         self.mix_up_alpha = mix_up_alpha
@@ -61,6 +70,16 @@ class Dataset(data.Dataset):
         self.labels_path = resolve(data[f"{self.type}_labels"])
         # Список ID примеров сплита (имена файлов без расширения); None — вся папка
         self.list_path = resolve(data.get(f"{self.type}_list"))
+        # Границы размеченной зоны (ID примера -> (первый onset, последний offset)) для edge_mask
+        self.zones = self._read_zones(resolve(data.get("zones")))
+
+    @staticmethod
+    def _read_zones(path):
+        """CSV (sample_id, annot_start, annot_end) -> {ID: (annot_start, annot_end)}; None — зон нет."""
+        if path is None:
+            return None
+        with open(path, encoding="utf-8", newline="") as f:
+            return {row["sample_id"]: (int(row["annot_start"]), int(row["annot_end"])) for row in csv.DictReader(f)}
         
     def _load_data(self):
         """
@@ -153,7 +172,11 @@ class Dataset(data.Dataset):
         """
         with open(self.filenames[i], "rb") as f:
             data = torch.load(f, map_location="cpu", weights_only=False)
-        return data.float()
+        data = data.float()
+        if self.edge_mask is not None and self.zones is not None:
+            sample_id = os.path.basename(self.filenames[i]).rsplit(".", 1)[0]
+            data = self.edge_mask(data, self.zones.get(sample_id))
+        return data
     
     def load_mosaic(self, index):
         # resulting labels

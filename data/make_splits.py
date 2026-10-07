@@ -81,7 +81,9 @@ def write_list(path: Path, records: list, samples: dict) -> int:
 
 def fold_config(k: int, names: dict) -> dict:
     """Конфиг Dataset: пути относительно папки data/ (ключ `path` задаётся от yaml-файла)."""
-    config = {"path": "..", "names": names, "mode": "single_lead", "fold": k}
+    config = {"path": "..", "names": names, "mode": "single_lead", "fold": k,
+              # границы размеченной зоны для маскирования краёв при загрузке (EdgeMask, D5)
+              "zones": "processed/ludb/manifest.csv"}
     for split in ("train", "val", "test"):
         config[f"{split}_data"] = "processed/ludb/signals"
         config[f"{split}_labels"] = "processed/ludb/labels"
