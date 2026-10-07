@@ -55,4 +55,12 @@ python data/make_splits.py     # после prepare_ludb.py; детермини�
 
 Формат конфига `Dataset` (обратно совместим со старыми конфигами): необязательный ключ `path` задаёт базовую папку относительных путей (относительно yaml-файла); `<split>_list` — список ID примеров из папки `<split>_data`. Кэш меток для списка пишется рядом с ним (`<список>.labels.cache`, в git не попадает) и пересоздаётся при изменении разметки.
 
-Лицензия: Open Data Commons Attribution v1.0. Цитировать: Kalyakulina A. I. et al., *LUDB: A New Open-Access Validation Tool for Electrocardiogram Delineation Algorithms*, IEEE Access 8, 2020, и PhysioNet (doi:10.13026/eegm-h675). Особенности разметки описаны в [docs/research/R1_ludb.md](../docs/research/R1_ludb.md).
+Лицензия: Open Data Commons Attribution v1.0.
+
+## MIT-BIH Noise Stress Test Database (шумы для аугментации N5)
+
+```bash
+python data/download_nstdb.py   # -> data/raw/nstdb/{bw,ma,em}.{dat,hea}, сверка SHA-256
+```
+
+Скачиваются только три записи шумов: `bw` (дрейф изолинии), `ma` (мышечный артефакт), `em` (артефакт движения электродов). Каждая — 2 канала, 360 Гц, 30 мин. Лицензия ODC-By 1.0. Цитировать: Moody G. B., Muldrow W. E., Mark R. G., *A noise stress test for arrhythmia detectors*, Computers in Cardiology 11:381–384, 1984. Цитировать: Kalyakulina A. I. et al., *LUDB: A New Open-Access Validation Tool for Electrocardiogram Delineation Algorithms*, IEEE Access 8, 2020, и PhysioNet (doi:10.13026/eegm-h675). Особенности разметки описаны в [docs/research/R1_ludb.md](../docs/research/R1_ludb.md).

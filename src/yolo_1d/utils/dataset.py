@@ -18,17 +18,23 @@ class Dataset(data.Dataset):
                  mosaic_prob=0,
                  mix_up_prob=0,
                  mix_up_alpha=20,
-                 edge_mask=None):
+                 edge_mask=None,
+                 splice_prob=0,
+                 beat_splice_prob=0):
         """
             edge_mask
                 Callable (signal, annotated) -> signal, например `transforms.EdgeMask`: маскирует
                 неразмеченные края записи при загрузке. Применяется, только если в yaml задан ключ
                 `zones` (CSV с колонками sample_id, annot_start, annot_end); иначе сигнал не меняется.
+            splice_prob, beat_splice_prob
+                Вероятности склейки двух записей (ЭКГ-аугментации X1 и X2, см. `load_splice`).
         """
         super().__init__()
         self.transform = transform
         self.edge_mask = edge_mask
         self.mosaic_prob = mosaic_prob
+        self.splice_prob = splice_prob
+        self.beat_splice_prob = beat_splice_prob
         self.mix_up_prob = mix_up_prob
         self.mix_up_alpha = mix_up_alpha
         self.filename = filename
@@ -215,6 +221,87 @@ class Dataset(data.Dataset):
         
         return signals, labels
     
+    # ------------------------------------------------------------------ X1/X2: склейка двух записей (ЭКГ, A1)
+    @staticmethod
+    def _cut_points(label: numpy.ndarray, length: int, aligned: bool, span) -> list:
+        """Допустимые точки разреза записи (в отсчётах).
+
+        aligned=True (X2): середины пауз после T-волны (между её концом и началом следующей волны,
+        пауза ≥ 10 отсчётов) — разрез не проходит через волну. aligned=False (X1): любая точка
+        активной части.
+        """
+        if not aligned:
+            return list(range(span[0] + 1, span[1] - 1))
+        if len(label) < 2:
+            return []
+        left = (label[:, 1] - label[:, 2] / 2) * length
+        right = (label[:, 1] + label[:, 2] / 2) * length
+        order = numpy.argsort(left)
+        cls, left, right = label[order, 0], left[order], right[order]
+        cuts = []
+        for k in range(len(order) - 1):
+            if int(cls[k]) == 2 and left[k + 1] - right[k] >= 10:
+                cuts.append(int((right[k] + left[k + 1]) / 2))
+        return cuts
+
+    @staticmethod
+    def _crop_labels(label: numpy.ndarray, length: int, start: float, end: float, shift: float, new_length: int):
+        """Разметка части [start, end) записи, сдвинутой на shift, в долях new_length. Волны, видимые
+        на отрезке меньше чем наполовину, отбрасываются, остальные обрезаются по его краям."""
+        if len(label) == 0:
+            return numpy.zeros((0, 3), dtype=numpy.float32)
+        left = (label[:, 1] - label[:, 2] / 2) * length
+        right = (label[:, 1] + label[:, 2] / 2) * length
+        new_l, new_r = left.clip(start, end), right.clip(start, end)
+        keep = (new_r - new_l) >= 0.5 * (right - left)
+        new_l, new_r = new_l[keep] + shift, new_r[keep] + shift
+        out = numpy.stack([label[keep, 0], (new_l + new_r) / 2 / new_length, (new_r - new_l) / new_length], axis=1)
+        return out.astype(numpy.float32)
+
+    def load_splice(self, index, aligned: bool):
+        """Склейка начала записи `index` с концом другой случайной записи.
+
+        aligned=False (X1, «наивная мозаика»): разрезы в случайных точках активной части, без
+        выравнивания — на стыке возможны разрыв ритма и ступенька изолинии.
+        aligned=True (X2, beat-splice): разрезы в паузах после T-волн, изолиния второй части
+        сдвигается к уровню первой на стыке, обнулённые края (маска) не трогаются.
+        Разрез второй записи выбирается так, чтобы длина результата была близка к исходной.
+        Если допустимых разрезов нет, возвращается исходная запись.
+        """
+        other = random.choice(self.indices)
+        a, b = self.load_signal(index), self.load_signal(other)
+        label_a = self.labels[self.filenames[index]].copy()
+        label_b = self.labels[self.filenames[other]].copy()
+        la, lb = a.shape[-1], b.shape[-1]
+        span_a = self._active_span(a)
+        span_b = self._active_span(b)
+        cuts_a = self._cut_points(label_a, la, aligned, span_a)
+        cuts_b = self._cut_points(label_b, lb, aligned, span_b)
+        if not cuts_a or not cuts_b or other == index:
+            return a, label_a
+        cut_a = random.choice(cuts_a)
+        # разрез второй записи — ближайший к позиции, при которой длина результата = la
+        target = cut_a + lb - la
+        cut_b = min(cuts_b, key=lambda c: abs(c - target)) if aligned else int(numpy.clip(target, *span_b))
+        head, tail = a[:, :cut_a], b[:, cut_b:].clone()
+        if aligned:
+            # выравнивание изолинии: медиана 25 отсчётов слева и справа от стыка (в паузе после T)
+            offset = head[:, -25:].median(dim=-1, keepdim=True).values - tail[:, :25].median(dim=-1, keepdim=True).values
+            active = tail != 0
+            tail = torch.where(active, tail + offset, tail)
+        data = torch.cat([head, tail], dim=-1)
+        new_length = data.shape[-1]
+        label = numpy.concatenate([
+            self._crop_labels(label_a, la, 0, cut_a, 0, new_length),
+            self._crop_labels(label_b, lb, cut_b, lb, cut_a - cut_b, new_length),
+        ], axis=0)
+        return data, label
+
+    @staticmethod
+    def _active_span(signal: torch.Tensor):
+        nz = torch.nonzero(signal.abs().sum(0) > 0).flatten()
+        return (0, signal.shape[-1]) if len(nz) == 0 else (int(nz[0]), int(nz[-1]) + 1)
+
     def load_mix_up(self, data1, target_box1, target_cls1):
         # load another signal
         index = random.choices(self.indices, k=1)[0]
@@ -249,8 +336,14 @@ class Dataset(data.Dataset):
         """
         index = self.indices[index]
         
-        # load mosaic signal
-        if self.mosaic_prob and random.random() < self.mosaic_prob:
+        # склейка записей (X1/X2) или mosaic
+        # случайное число тянется только при включённой склейке: поток случайных чисел прежних конфигов не меняется
+        r = random.random() if (self.splice_prob or self.beat_splice_prob) else 1.0
+        if r < self.splice_prob:
+            data, label = self.load_splice(index, aligned=False)
+        elif r < self.splice_prob + self.beat_splice_prob:
+            data, label = self.load_splice(index, aligned=True)
+        elif self.mosaic_prob and random.random() < self.mosaic_prob:
             data, label = self.load_mosaic(index)
         else:
             # load signal

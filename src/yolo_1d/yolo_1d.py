@@ -106,7 +106,9 @@ class Trainer:
                                       mosaic_prob=self._settings.augmentations.mosaic,
                                       mix_up_prob=self._settings.augmentations.mix_up,
                                       mix_up_alpha=self._settings.augmentations.mix_up_alpha,
-                                      edge_mask=train_mask)
+                                      edge_mask=train_mask,
+                                      splice_prob=aug.ecg.mosaic_p if aug.pipeline == "ecg" else 0,
+                                      beat_splice_prob=aug.ecg.splice_p if aug.pipeline == "ecg" else 0)
         self._val_dataset = Dataset(self._settings.dataset, transform=self._test_transform, type="val",
                                     edge_mask=eval_mask)
         self._test_dataset = Dataset(self._settings.dataset, transform=self._test_transform, type="test",

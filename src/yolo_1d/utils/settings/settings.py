@@ -1,6 +1,49 @@
 from typing import List, Literal, Optional, Union
 from pydantic import BaseModel, Field
 
+class ECGAugmentationSettings(BaseModel):
+    """ЭКГ-аугментации (A1, docs/research/R3_augmentations.md §3); работают при `pipeline: ecg`.
+
+    Вероятность `*_p` = 0 выключает аугментацию. SNR — в дБ относительно активной части сигнала,
+    диапазоны — [min, max], длительности — в секундах при 500 Гц.
+    """
+    # N — шумы
+    wander_p: float = Field(0.0, ge=0, le=1, description="N1 baseline wander probability.")
+    wander_amp: float = Field(0.5, ge=0, description="N1 max amplitude, in SD of signal.")
+    wander_freq: List[float] = Field([0.05, 0.5], min_length=2, max_length=2, description="N1 frequency range, Hz.")
+    powerline_p: float = Field(0.0, ge=0, le=1, description="N2 powerline 50/60 Hz probability.")
+    powerline_snr: List[float] = Field([15, 35], min_length=2, max_length=2)
+    emg_p: float = Field(0.0, ge=0, le=1, description="N3 EMG bursts probability.")
+    emg_snr: List[float] = Field([10, 25], min_length=2, max_length=2)
+    white_p: float = Field(0.0, ge=0, le=1, description="N4 white noise probability.")
+    white_snr: List[float] = Field([20, 35], min_length=2, max_length=2)
+    nstdb_p: float = Field(0.0, ge=0, le=1, description="N5 real noise (MIT-BIH NSTDB bw/ma/em) probability.")
+    nstdb_snr: List[float] = Field([6, 24], min_length=2, max_length=2)
+    nstdb_root: str = Field("data/raw/nstdb", description="Folder with NSTDB records (data/download_nstdb.py).")
+    step_p: float = Field(0.0, ge=0, le=1, description="N6 baseline step probability.")
+    step_amp: float = Field(1.0, ge=0, description="N6 max step, in SD of signal.")
+    filter_p: float = Field(0.0, ge=0, le=1, description="N7 random high/low-pass filter probability.")
+    # T — время
+    time_scale_p: float = Field(0.0, ge=0, le=1, description="T1 global time scaling probability.")
+    time_scale: List[float] = Field([0.85, 1.15], min_length=2, max_length=2)
+    hrv_warp_p: float = Field(0.0, ge=0, le=1, description="T2 physiological HRV warp probability.")
+    hrv_tp: List[float] = Field([0.6, 1.5], min_length=2, max_length=2, description="T2 diastole (TP) scale range.")
+    window_warp_p: float = Field(0.0, ge=0, le=1, description="T3 window warping probability.")
+    window_warp_scale: List[float] = Field([0.7, 1.4], min_length=2, max_length=2)
+    # A — амплитуда
+    amp_scale_p: float = Field(0.0, ge=0, le=1, description="A1 amplitude scaling probability.")
+    amp_scale_sigma: float = Field(0.2, ge=0, description="A1 lognormal sigma.")
+    wave_scale_p: float = Field(0.0, ge=0, le=1, description="A2 per-wave amplitude scaling probability.")
+    wave_scale_sigma_pt: float = Field(0.3, ge=0, description="A2 lognormal sigma for P and T (QRS: 0.1).")
+    invert_p: float = Field(0.0, ge=0, le=1, description="A3 polarity inversion probability.")
+    # M — маскирование
+    time_mask_p: float = Field(0.0, ge=0, le=1, description="M1 time masking probability.")
+    time_mask_max: float = Field(0.1, ge=0, le=1, description="M1 max masked fraction of active part.")
+    # X — склейка записей (в Dataset)
+    mosaic_p: float = Field(0.0, ge=0, le=1, description="X1 naive splice of two records at random points.")
+    splice_p: float = Field(0.0, ge=0, le=1, description="X2 beat splice of two records at TP gaps with isoline alignment.")
+
+
 class AugmentationSettings(BaseModel):
     # Значения по умолчанию — вихретоковые данные (сигнал 50000 → вход 49152 через ресайз).
     # ЭКГ (LUDB): regular_length=5000, input_length=5120, validation_resize=False — только паддинг.
@@ -30,6 +73,11 @@ class AugmentationSettings(BaseModel):
     channel_scaling: float = Field(0.4, ge=0.0, description="Strength of channel scaling.")
     time_masking: float = Field(0.2, ge=0.0, le=1.0, description="Max length of time masking.")
     channel_masking: float = Field(0.1, ge=0.0, le=1.0, description="Probability of channel masking.")
+
+    # набор аугментаций обучения: "eddy" — исходный (вихретоковые данные, поля выше),
+    # "ecg" — ЭКГ-аугментации из `ecg` (A1); значения по умолчанию сохраняют прежнее поведение
+    pipeline: Literal["eddy", "ecg"] = Field("eddy", description="Training augmentation pipeline.")
+    ecg: ECGAugmentationSettings = Field(default_factory=ECGAugmentationSettings)
 
     # настройки для mixup / mosaic / adversarial
     mosaic: float = Field(0.0, ge=0.0, le=1.0, description="Probability of mosaic augmentation.")
