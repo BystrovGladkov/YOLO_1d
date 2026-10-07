@@ -2,9 +2,16 @@ from typing import List, Literal, Optional
 from pydantic import BaseModel, Field
 
 class AugmentationSettings(BaseModel):
+    # Значения по умолчанию — вихретоковые данные (сигнал 50000 → вход 49152 через ресайз).
+    # ЭКГ (LUDB): regular_length=5000, input_length=5120, validation_resize=False — только паддинг.
     regular_length: int = Field(50000, description="regular length of input signal, used to save aspect in validation transforms.")
     input_length: int = Field(49152, description="Target input length of signal.")
-    
+    validation_resize: bool = Field(
+        True, description="Validation transform: pad to regular_length and resize to input_length (True, "
+                          "eddy-current data) or only pad to input_length without changing time scale (False, ECG).")
+    square_noises: float = Field(0.1, ge=0.0, le=1.0,
+                                 description="Probability of SquareNoises (eddy-current specific, needs 30 channels).")
+
     # параметры для train transform
     mark_scaling: int = Field(300, ge=1, description="Scale used in MarkScaling.")
     random_resize: float = Field(0.1, ge=0.0, description="RandomResize strength.")
@@ -42,6 +49,7 @@ class TrainingSettings(BaseModel):
     model_size: Literal["nano", "small", "medium", "large"] = Field(
         "nano", description="Size of model. One from next options: 'nano', 'small', 'medium', 'large'."
     )
+    input_channels: int = Field(30, ge=1, description="Number of channels of input signal (30 — eddy-current data, 1 — ECG per lead).")
 
     # training settings
     enable_amp: bool = Field(False, description="Enable AMP (automatic mixed precision).")

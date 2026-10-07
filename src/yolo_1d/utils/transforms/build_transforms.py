@@ -11,7 +11,8 @@ def build_training_transforms(settings: AugmentationSettings):
         RandomCrop(settings.input_length),
     ]
 
-    ops.append(RandomApply(SquareNoises(), p=0.1))
+    if settings.square_noises > 0:
+        ops.append(RandomApply(SquareNoises(), p=settings.square_noises))
     
     if settings.phase_spectrum_noise > 0:
         ops.append(PhaseSpectrumNoise(settings.phase_spectrum_noise))
@@ -34,6 +35,11 @@ def build_training_transforms(settings: AugmentationSettings):
 
 def build_validation_transform(settings: AugmentationSettings):
     ops = []
-    ops.append(Padding(settings.regular_length))
-    ops.append(Resize(settings.input_length))
+    if settings.validation_resize:
+        # вихретоковые данные: паддинг до regular_length и ресайз до input_length
+        ops.append(Padding(settings.regular_length))
+        ops.append(Resize(settings.input_length))
+    else:
+        # ЭКГ: только паддинг до input_length, временной масштаб не меняется
+        ops.append(Padding(settings.input_length))
     return Compose(ops)

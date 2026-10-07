@@ -240,6 +240,7 @@ class DFL(torch.nn.Module):
 class Head(torch.nn.Module):
     anchors = torch.empty(0)
     strides = torch.empty(0)
+    input_length = INPUT_LENGTH  # длина входа сети; задаётся моделью YOLO
 
     def __init__(self, nc=80, filters=()):
         super().__init__()
@@ -291,19 +292,30 @@ class Head(torch.nn.Module):
             # box
             box[-1].bias.data[:] = 1.0
             # cls (.01 objects, 80 classes, 640 image)
-            cls[-1].bias.data[:self.nc] = math.log(5 / self.nc / (INPUT_LENGTH / s) ** 2)
+            cls[-1].bias.data[:self.nc] = math.log(5 / self.nc / (self.input_length / s) ** 2)
 
 
 class YOLO(torch.nn.Module):
-    def __init__(self, width=None, depth=None, csp=None, num_classes=3, input_channels=15):
+    def __init__(self, width=None, depth=None, csp=None, num_classes=3, input_channels=15,
+                 input_length: int = INPUT_LENGTH):
+        """
+            input_channels
+                Число каналов входного сигнала (30 — вихретоковые данные, 1 — ЭКГ по отведениям).
+            input_length
+                Длина входа сети, по которой вычисляются страйды голов (49152 — вихретоковые данные,
+                5120 — ЭКГ). Должна делиться на максимальный страйд сети.
+        """
         super().__init__()
+        self.input_channels = input_channels
+        self.input_length = input_length
         self.net = DarkNet(input_channels, width, depth, csp)
         self.fpn = DarkFPN(width, depth, csp)
         
         # calculate biases
-        img_dummy = torch.zeros(1, input_channels, INPUT_LENGTH)
+        img_dummy = torch.zeros(1, input_channels, input_length)
         self.head = Head(num_classes, (width[7], width[7], width[7]))
-        self.head.stride = torch.tensor([INPUT_LENGTH / x.shape[-1] for x in self.forward(img_dummy)])
+        self.head.input_length = input_length
+        self.head.stride = torch.tensor([input_length / x.shape[-1] for x in self.forward(img_dummy)])
         self.stride = self.head.stride
         self.head.initialize_biases()
 
@@ -325,47 +337,51 @@ class YOLO(torch.nn.Module):
         return self
 
 
-def yolo_v11_n(num_classes: int = 80):
+def yolo_v11_n(num_classes: int = 80, input_channels: int = 30, input_length: int = INPUT_LENGTH):
     csp = [False, False, True]
     depth = [1, 1, 1, 1, 1, 1, 1, 1, 1]
     width = [32, 32, 32, 64, 128, 128, 128, 128]
-    return YOLO(width, depth, csp, num_classes, 30)
+    return YOLO(width, depth, csp, num_classes, input_channels, input_length)
 
 
-def yolo_v11_s(num_classes: int = 80):
+def yolo_v11_s(num_classes: int = 80, input_channels: int = 30, input_length: int = INPUT_LENGTH):
     csp = [True, True, True]
     depth = [1, 1, 1, 1, 1, 1, 1, 1, 1]
     width = [32, 32, 64, 96, 128, 128, 192, 192]
-    return YOLO(width, depth, csp, num_classes, 30)
+    return YOLO(width, depth, csp, num_classes, input_channels, input_length)
 
 
-def yolo_v11_m(num_classes: int = 80):
+def yolo_v11_m(num_classes: int = 80, input_channels: int = 30, input_length: int = INPUT_LENGTH):
     csp = [True, True, True]
     depth = [1, 1, 1, 1, 1, 2, 2, 2, 2]
     width = [32, 32, 64, 96, 128, 192, 192, 256]
-    return YOLO(width, depth, csp, num_classes, 30)
+    return YOLO(width, depth, csp, num_classes, input_channels, input_length)
 
 
-def yolo_v11_l(num_classes: int = 80):
+def yolo_v11_l(num_classes: int = 80, input_channels: int = 30, input_length: int = INPUT_LENGTH):
     csp = [True, True, True]
     depth = [1, 1, 1, 1, 1, 2, 2, 2, 3]
     width = [32, 64, 64, 96, 128, 192, 256, 512]
-    return YOLO(width, depth, csp, num_classes, 30)
+    return YOLO(width, depth, csp, num_classes, input_channels, input_length)
 
-def yolo_v11_xl(num_classes: int = 80):
+def yolo_v11_xl(num_classes: int = 80, input_channels: int = 30, input_length: int = INPUT_LENGTH):
     csp = [True, True, True]
     depth = [1, 3, 3, 3, 3, 3, 4, 4, 5]
     width = [32, 64, 64, 96, 128, 192, 256, 512]
-    return YOLO(width, depth, csp, num_classes, 30)
+    return YOLO(width, depth, csp, num_classes, input_channels, input_length)
 
-def get_model(size:str, num_classes:int):    
+def get_model(size: str, num_classes: int, input_channels: int = 30, input_length: int = INPUT_LENGTH):
+    """
+        Создаёт модель размера size ("nano", "small", "medium", "large", "xlarge").
+        По умолчанию — конфигурация для вихретоковых данных (30 каналов, вход 49152).
+    """
     if size == "nano":
-        return yolo_v11_n(num_classes)
+        return yolo_v11_n(num_classes, input_channels, input_length)
     if size == "small":
-        return yolo_v11_s(num_classes)
+        return yolo_v11_s(num_classes, input_channels, input_length)
     if size == "medium":
-        return yolo_v11_m(num_classes)
+        return yolo_v11_m(num_classes, input_channels, input_length)
     if size == "large":
-        return yolo_v11_l(num_classes)
+        return yolo_v11_l(num_classes, input_channels, input_length)
     if size == "xlarge":
-        return yolo_v11_xl(num_classes)
+        return yolo_v11_xl(num_classes, input_channels, input_length)

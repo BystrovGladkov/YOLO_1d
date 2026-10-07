@@ -9,6 +9,8 @@ from torch.utils import data
 
 import yaml
 
+from yolo_1d.utils.constants import INPUT_LENGTH
+
 class Dataset(data.Dataset):
     
     def __init__(self, filename, transform, type: Literal["train", "val", "test"],
@@ -274,8 +276,8 @@ class Dataset(data.Dataset):
 
 
 
-def wh2xy(x, w=49152):
-    """ from [x, w] normalized to [x1, x2]"""
+def wh2xy(x, w=INPUT_LENGTH):
+    """ from [x, w] normalized to [x1, x2]; w — длина входа сети в отсчётах"""
     y = numpy.copy(x)
     y[:, 0] = w * (x[:, 0] - x[:, 1] / 2) # left
     y[:, 1] = w * (x[:, 0] + x[:, 1] / 2) # right

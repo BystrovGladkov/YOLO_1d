@@ -67,7 +67,9 @@ class Trainer:
         
     def _get_model(self):
         """ Creates a model of desired size."""
-        return nn.get_model(self._settings.model_size, self._num_classes)
+        return nn.get_model(self._settings.model_size, self._num_classes,
+                            input_channels=self._settings.input_channels,
+                            input_length=self._settings.augmentations.input_length)
         
     def _init_model(self):
         """
@@ -190,7 +192,8 @@ class Trainer:
         
         self._adversarial = self._settings.augmentations.adversarial
         # show summary
-        dummy_size = (self._settings.batch_size, 30, INPUT_LENGTH)
+        dummy_size = (self._settings.batch_size, self._settings.input_channels,
+                      self._settings.augmentations.input_length)
         print(summary(self._model, dummy_size))
         
         self._logger_path = os.path.join(self._project_path, 'step.csv')
@@ -462,15 +465,20 @@ class Trainer:
         # get predictions
         outputs = self._ema.ema(data)
         outputs = util.non_max_suppression(outputs, conf)
-        for out in outputs:
-            out[:, :2] = out[:, :2] / INPUT_LENGTH * REGULAR_LENGTH
+        aug = self._settings.augmentations
+        if aug.validation_resize:
+            # вход был дополнен до regular_length и сжат до input_length — возвращаем масштаб
+            for out in outputs:
+                out[:, :2] = out[:, :2] / aug.input_length * aug.regular_length
+        # без ресайза (ЭКГ) паддинг добавлен справа: координаты уже в отсчётах исходного сигнала
         return outputs
     
     def export_onnx(self, filename, opset=17):
         from yolo_1d.nets.export import ExportWrapper
-        example_input = (torch.randn((1, 30, REGULAR_LENGTH), device=self._device),)
+        aug = self._settings.augmentations
+        example_input = (torch.randn((1, self._settings.input_channels, aug.regular_length), device=self._device),)
         self._ema.ema.eval()
-        wrapper = ExportWrapper(self._ema.ema)
+        wrapper = ExportWrapper(self._ema.ema, input_length=aug.input_length, resize=aug.validation_resize)
         torch.onnx.export(wrapper, example_input,
             f=filename,   
             input_names=["input"],

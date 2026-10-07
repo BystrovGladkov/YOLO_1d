@@ -114,9 +114,15 @@
 
 ## Этап 2. Модель, метрики, пайплайн
 
-- [~] **M1** `[DEV]` **Параметризация длины входа и числа каналов.** Зависит от: R4.
+- [x] **M1** `[DEV]` **Параметризация длины входа и числа каналов.** Зависит от: R4.
   Убрать жёсткие `INPUT_LENGTH=49152`, `REGULAR_LENGTH=50000` и `input_channels=30` (`utils/constants.py`, `nets/nn.py`, `wh2xy` в `utils/dataset.py`) — сделать их параметрами настроек/конструктора без поломки исходной конфигурации для вихретоковых данных.
   Для ЭКГ: `regular_length = 5000`, `input_length = 5120`, **одинаково для обучения и валидации**. Валидационный `Resize` убрать (только паддинг): ресайз меняет временной масштаб.
+  **Итог:** значения по умолчанию остались вихретоковыми (50000 / 49152 / 30 каналов, ресайз на валидации): старые конфиги (`start_example.py`) и логи не меняются. Для ЭКГ всё задаётся в настройках. Тесты [tests/test_config_params.py](tests/test_config_params.py); всего 32 passed.
+  - `TrainingSettings.input_channels` (по умолчанию 30) → `nn.get_model(size, nc, input_channels, input_length)` → `YOLO(..., input_channels, input_length)`. Страйды считаются dummy-прогоном заданной длины, `Head.initialize_biases` берёт длину модели (формулу исправит M2).
+  - `AugmentationSettings.validation_resize`: True — паддинг до `regular_length` + `Resize` (как было), False — только паддинг до `input_length`. `AugmentationSettings.square_noises` — вероятность `SquareNoises` (было зашито 0.1; на 1 канале этот шум падает, для ЭКГ = 0).
+  - `Trainer`: `summary`, `predict` (масштаб координат только при ресайзе) и `export_onnx` берут каналы и длины из настроек. `ExportWrapper(model, input_length, resize)` при `resize=False` дополняет вход нулями без интерполяции. `constants.py` остались только как значения по умолчанию.
+  - **Настройки ЭКГ:** `input_channels: 1`; `augmentations: {regular_length: 5000, input_length: 5120, validation_resize: false, square_noises: 0}`. Для baseline без аугментаций дополнительно обнулить `random_resize, phase_spectrum_noise, random_jitter, random_invert, random_reverse, channel_scaling, time_masking, channel_masking` (у них ненулевые вихретоковые значения по умолчанию).
+  - Сквозной тест: `Trainer` + `data/splits/fold_0.yaml` → батч (4, 1, 5120) → модель → `ComputeLoss`, лосс конечный. На 5120 пока работают исходные страйды {32, 128, 256}; переход на {4, 16, 32} — M2.
 
 - [~] **M2** `[DEV]` **ECG-конфигурация архитектуры.** Зависит от: M1, R4.
   Реализовать рекомендованный в R4 вариант бэкбона/FPN для входа ~5000 (количество и расположение свёрток с шагом 2, страйды голов). Функцию потерь **не менять**. Проверить forward-pass, расчёт `stride`, число параметров и FLOPs; добавить юнит-тест на формы выходов.
