@@ -69,7 +69,10 @@ class Trainer:
         """ Creates a model of desired size."""
         return nn.get_model(self._settings.model_size, self._num_classes,
                             input_channels=self._settings.input_channels,
-                            input_length=self._settings.augmentations.input_length)
+                            input_length=self._settings.augmentations.input_length,
+                            strides=self._settings.backbone_strides,
+                            bias_init=self._settings.bias_init,
+                            expected_objects=self._settings.expected_objects)
         
     def _init_model(self):
         """

@@ -1,4 +1,4 @@
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Union
 from pydantic import BaseModel, Field
 
 class AugmentationSettings(BaseModel):
@@ -50,6 +50,14 @@ class TrainingSettings(BaseModel):
         "nano", description="Size of model. One from next options: 'nano', 'small', 'medium', 'large'."
     )
     input_channels: int = Field(30, ge=1, description="Number of channels of input signal (30 — eddy-current data, 1 — ECG per lead).")
+    backbone_strides: Union[Literal["original", "A", "B", "C"], List[int]] = Field(
+        "original", description="Strides of 8 downsampling convolutions of backbone: template name "
+                                "('original' — heads {32,128,256}; ECG: 'A' — {4,16,32}, 'B' — {8,16,32}, "
+                                "'C' — {4,8,16}) or list of 8 values from {1, 2}.")
+    bias_init: Literal["legacy", "1d"] = Field(
+        "legacy", description="Initialization of classification biases: 'legacy' (original 2D formula) "
+                              "or '1d' (prior = expected_objects / classes / anchors).")
+    expected_objects: float = Field(24.0, gt=0.0, description="Expected number of objects per input (for bias_init='1d').")
 
     # training settings
     enable_amp: bool = Field(False, description="Enable AMP (automatic mixed precision).")

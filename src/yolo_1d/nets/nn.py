@@ -7,11 +7,12 @@ from yolo_1d.utils.util import make_anchors
 from yolo_1d.utils.constants import *
 
 def fuse_conv(conv, norm):
-    fused_conv = torch.nn.Conv2d(conv.in_channels,
+    fused_conv = torch.nn.Conv1d(conv.in_channels,
                                  conv.out_channels,
                                  kernel_size=conv.kernel_size,
                                  stride=conv.stride,
                                  padding=conv.padding,
+                                 dilation=conv.dilation,
                                  groups=conv.groups,
                                  bias=True).requires_grad_(False).to(conv.weight.device)
 
@@ -156,29 +157,66 @@ class PSA(torch.nn.Module):
         return self.conv2(torch.cat(tensors=(x, self.res_m(y)), dim=1))
 
 
+# Шаблоны шагов 8 «даунсэмплирующих» свёрток бэкбона (docs/research/R4_architecture.md §4).
+# Страйды голов = (произведение первых 5, первых 7, всех 8 шагов).
+STRIDE_TEMPLATES = {
+    "original": [2, 2, 2, 2, 2, 2, 2, 2],  # {32, 128, 256} — вихретоковые данные (вход 49152)
+    "A": [2, 2, 1, 1, 1, 2, 2, 2],         # {4, 16, 32}  — ЭКГ, рекомендован (R4 §5.1)
+    "B": [2, 2, 2, 1, 1, 1, 2, 2],         # {8, 16, 32}  — ЭКГ, запасной
+    "C": [2, 1, 1, 1, 2, 1, 2, 2],         # {4, 8, 16}   — ЭКГ, альтернатива (R4 §5.2)
+}
+
+
+def resolve_strides(strides=None):
+    """Имя шаблона или список из 8 шагов (1 или 2) → список шагов. None → "original"."""
+    if strides is None:
+        strides = "original"
+    if isinstance(strides, str):
+        if strides not in STRIDE_TEMPLATES:
+            raise ValueError(f"неизвестный шаблон страйдов {strides!r}; доступны {list(STRIDE_TEMPLATES)}")
+        return list(STRIDE_TEMPLATES[strides])
+    strides = [int(s) for s in strides]
+    if len(strides) != 8 or any(s not in (1, 2) for s in strides):
+        raise ValueError(f"нужно 8 шагов из {{1, 2}}, получено {strides}")
+    return strides
+
+
+def head_strides(strides=None):
+    """Шаги 8 свёрток → страйды трёх уровней детекции (p1, p2, p3)."""
+    s = resolve_strides(strides)
+    return math.prod(s[:5]), math.prod(s[:7]), math.prod(s)
+
+
 class DarkNet(torch.nn.Module):
-    def __init__(self, input_channels, width, depth, csp):
+    def __init__(self, input_channels, width, depth, csp, strides=None):
+        """
+            strides
+                Шаги 8 свёрток понижения разрешения (имя шаблона из STRIDE_TEMPLATES или список).
+                По умолчанию — исходная конфигурация: все шаги 2, страйды голов {32, 128, 256}.
+                Шаг 1 меняет только разрешение: параметры и имена слоёв те же.
+        """
         super().__init__()
+        s = resolve_strides(strides)
         self.p1 = []
         self.p2 = []
         self.p3 = []
 
         # p1/2
         # 50000
-        self.p1.append(Conv(input_channels, width[0], torch.nn.SiLU(), 3, 2, 1))      # 24576, 3
-        self.p1.append(Conv(width[0], width[1], torch.nn.SiLU(), 3, 2, 1))      # 12288, 7
-        self.p1.append(Conv(width[1], width[2], torch.nn.SiLU(), 3, 2, 1))     # 6144, 19
+        self.p1.append(Conv(input_channels, width[0], torch.nn.SiLU(), 3, s[0], 1))      # 24576, 3
+        self.p1.append(Conv(width[0], width[1], torch.nn.SiLU(), 3, s[1], 1))      # 12288, 7
+        self.p1.append(Conv(width[1], width[2], torch.nn.SiLU(), 3, s[2], 1))     # 6144, 19
         self.p1.append(CSP( width[2], width[2], depth[0], csp[0], r=2))                               # 6144, ? 40
-        self.p1.append(Conv(width[2], width[3], torch.nn.SiLU(), 3, 2, 1))    # 3072  ? 80
-        self.p1.append(Conv(width[3], width[4], torch.nn.SiLU(), 3, 2, 1))    # 1536  ? 200
-        self.p1.append(CSP( width[4], width[4], depth[1], csp[0], r=2))                               # 1536  ? 300 
-        
+        self.p1.append(Conv(width[2], width[3], torch.nn.SiLU(), 3, s[3], 1))    # 3072  ? 80
+        self.p1.append(Conv(width[3], width[4], torch.nn.SiLU(), 3, s[4], 1))    # 1536  ? 200
+        self.p1.append(CSP( width[4], width[4], depth[1], csp[0], r=2))                               # 1536  ? 300
+
         # p2/4
-        self.p2.append(Conv(width[4], width[5], torch.nn.SiLU(), 3, 2, 1))    # 768, 700
-        self.p2.append(Conv(width[5], width[6], torch.nn.SiLU(), 3, 2, 1))    # 384, 1500
+        self.p2.append(Conv(width[4], width[5], torch.nn.SiLU(), 3, s[5], 1))    # 768, 700
+        self.p2.append(Conv(width[5], width[6], torch.nn.SiLU(), 3, s[6], 1))    # 384, 1500
         self.p2.append(CSP( width[6], width[6], depth[2], csp[0], r=2))                               # 384, 3000
         # p3/8
-        self.p3.append(Conv(width[6], width[7], torch.nn.SiLU(), 3, 2, 1))    # 195, 8000
+        self.p3.append(Conv(width[6], width[7], torch.nn.SiLU(), 3, s[7], 1))    # 195, 8000
         self.p3.append(CSP( width[7], width[7], depth[3], csp[0], r=2))                               # 195, 12000
         self.p3.append(SPP(width[7], width[7]))
         self.p3.append(PSA(width[7], depth[4]))
@@ -194,28 +232,46 @@ class DarkNet(torch.nn.Module):
         return p1, p2, p3
 
 
+def _downsample(ch, ratio):
+    """Понижение разрешения в `ratio` раз свёртками с шагом 2 (ratio ∈ {1, 2, 4, 8}).
+
+    Для ratio = 2 — одиночный Conv, для ratio ≥ 4 — Sequential: при отношениях исходной сети
+    (4 и 2) имена параметров совпадают с прежними (h3.0, h3.1, h5) и старые чекпоинты загружаются.
+    """
+    n = {1: 0, 2: 1, 4: 2, 8: 3}.get(ratio)
+    if n is None:
+        raise ValueError(f"отношение страйдов соседних уровней должно быть 1, 2, 4 или 8, получено {ratio}")
+    if n == 0:
+        return torch.nn.Identity()
+    convs = [Conv(ch, ch, torch.nn.SiLU(), 3, 2, 1) for _ in range(n)]
+    return convs[0] if n == 1 else nn.Sequential(*convs)
+
+
 class DarkFPN(torch.nn.Module):
-    def __init__(self, width, depth, csp):
+    def __init__(self, width, depth, csp, ratio12=4, ratio23=2):
+        """
+            ratio12, ratio23
+                Отношения страйдов уровней p2/p1 и p3/p2. По умолчанию — исходная сеть (4 и 2).
+        """
         super().__init__()
-        self.up1 = torch.nn.Upsample(scale_factor=2)
-        self.up2 = torch.nn.Upsample(scale_factor=4)
+        self.up1 = torch.nn.Upsample(scale_factor=ratio23)
+        self.up2 = torch.nn.Upsample(scale_factor=ratio12)
         self.h1 = CSP(width[6] + width[7], width[7], depth[4], csp[1], r=2)
         self.h2 = CSP(width[4] + width[7], width[7], depth[5], csp[1], r=2)
-        self.h3 = nn.Sequential(Conv(width[7], width[7], torch.nn.SiLU(), 3, 2, 1), 
-                                Conv(width[7], width[7], torch.nn.SiLU(), 3, 2, 1))
+        self.h3 = _downsample(width[7], ratio12)
         self.h4 = CSP(width[7] * 2, width[7], depth[6], csp[1], r=2)
-        self.h5 = Conv(width[7], width[7], torch.nn.SiLU(), 3, 2, 1)
+        self.h5 = _downsample(width[7], ratio23)
         self.h6 = CSP(width[7] * 2, width[7], depth[7], csp[2], r=2)
 
     def forward(self, x):
         p3, p4, p5 = x
-        
+
         p4 = self.h1(torch.cat(tensors=[self.up1(p5), p4], dim=1))
-        
+
         p3 = self.h2(torch.cat(tensors=[self.up2(p4), p3], dim=1))
-        
+
         p4 = self.h4(torch.cat(tensors=[self.h3(p3), p4], dim=1))
-        
+
         p5 = self.h6(torch.cat(tensors=[self.h5(p4), p5], dim=1))
         return p3, p4, p5
 
@@ -285,31 +341,55 @@ class Head(torch.nn.Module):
         
         return (x, y) if self.validate else y
 
-    def initialize_biases(self):
-        # Initialize biases
-        # WARNING: requires stride availability
+    def initialize_biases(self, mode: str = "legacy", expected_objects: float = 24.0):
+        """
+            Initialize biases. WARNING: requires stride availability.
+
+            mode
+                "legacy" — исходная формула из 2D YOLO: log(5 / nc / (L / s)²) (квадрат числа ячеек);
+                сохранена для воспроизводимости вихретоковых экспериментов.
+                "1d" — априорная вероятность объекта на якорь в 1D:
+                log(expected_objects / nc / Σ_l (L / s_l)), где Σ_l (L / s_l) — число якорей.
+            expected_objects
+                Ожидаемое число объектов на вход (для "1d"); LUDB — ≈ 24 волны на отведение.
+        """
+        if mode not in ("legacy", "1d"):
+            raise ValueError(f"mode должен быть 'legacy' или '1d', получено {mode!r}")
+        num_anchors = sum(float(self.input_length / s) for s in self.stride)
         for box, cls, s in zip(self.box, self.cls, self.stride):
             # box
             box[-1].bias.data[:] = 1.0
-            # cls (.01 objects, 80 classes, 640 image)
-            cls[-1].bias.data[:self.nc] = math.log(5 / self.nc / (self.input_length / s) ** 2)
+            if mode == "legacy":
+                # cls (.01 objects, 80 classes, 640 image)
+                cls[-1].bias.data[:self.nc] = math.log(5 / self.nc / (self.input_length / s) ** 2)
+            else:
+                cls[-1].bias.data[:self.nc] = math.log(expected_objects / self.nc / num_anchors)
 
 
 class YOLO(torch.nn.Module):
     def __init__(self, width=None, depth=None, csp=None, num_classes=3, input_channels=15,
-                 input_length: int = INPUT_LENGTH):
+                 input_length: int = INPUT_LENGTH, strides=None, bias_init: str = "legacy",
+                 expected_objects: float = 24.0):
         """
             input_channels
                 Число каналов входного сигнала (30 — вихретоковые данные, 1 — ЭКГ по отведениям).
             input_length
                 Длина входа сети, по которой вычисляются страйды голов (49152 — вихретоковые данные,
                 5120 — ЭКГ). Должна делиться на максимальный страйд сети.
+            strides
+                Шаги свёрток бэкбона: имя шаблона из STRIDE_TEMPLATES ("original", "A", "B", "C")
+                или список из 8 шагов. По умолчанию — исходная сеть {32, 128, 256}.
+            bias_init, expected_objects
+                Инициализация смещений классификации (см. Head.initialize_biases).
         """
         super().__init__()
         self.input_channels = input_channels
         self.input_length = input_length
-        self.net = DarkNet(input_channels, width, depth, csp)
-        self.fpn = DarkFPN(width, depth, csp)
+        s1, s2, s3 = head_strides(strides)
+        if input_length % s3:
+            raise ValueError(f"длина входа {input_length} должна делиться на максимальный страйд {s3}")
+        self.net = DarkNet(input_channels, width, depth, csp, strides)
+        self.fpn = DarkFPN(width, depth, csp, ratio12=s2 // s1, ratio23=s3 // s2)
         
         # calculate biases
         img_dummy = torch.zeros(1, input_channels, input_length)
@@ -317,7 +397,7 @@ class YOLO(torch.nn.Module):
         self.head.input_length = input_length
         self.head.stride = torch.tensor([input_length / x.shape[-1] for x in self.forward(img_dummy)])
         self.stride = self.head.stride
-        self.head.initialize_biases()
+        self.head.initialize_biases(bias_init, expected_objects)
 
     def forward(self, x):
         x = self.net(x)
@@ -330,58 +410,59 @@ class YOLO(torch.nn.Module):
     
     def fuse(self):
         for m in self.modules():
-            if type(m) is Conv and hasattr(m, 'norm'):
-                m.conv = fuse_conv(m.conv, m.norm)
+            if type(m) is Conv and hasattr(m, 'bn'):
+                m.conv = fuse_conv(m.conv, m.bn)
                 m.forward = m.fuse_forward
-                delattr(m, 'norm')
+                delattr(m, 'bn')
         return self
 
 
-def yolo_v11_n(num_classes: int = 80, input_channels: int = 30, input_length: int = INPUT_LENGTH):
+def yolo_v11_n(num_classes: int = 80, input_channels: int = 30, input_length: int = INPUT_LENGTH, **arch):
     csp = [False, False, True]
     depth = [1, 1, 1, 1, 1, 1, 1, 1, 1]
     width = [32, 32, 32, 64, 128, 128, 128, 128]
-    return YOLO(width, depth, csp, num_classes, input_channels, input_length)
+    return YOLO(width, depth, csp, num_classes, input_channels, input_length, **arch)
 
 
-def yolo_v11_s(num_classes: int = 80, input_channels: int = 30, input_length: int = INPUT_LENGTH):
+def yolo_v11_s(num_classes: int = 80, input_channels: int = 30, input_length: int = INPUT_LENGTH, **arch):
     csp = [True, True, True]
     depth = [1, 1, 1, 1, 1, 1, 1, 1, 1]
     width = [32, 32, 64, 96, 128, 128, 192, 192]
-    return YOLO(width, depth, csp, num_classes, input_channels, input_length)
+    return YOLO(width, depth, csp, num_classes, input_channels, input_length, **arch)
 
 
-def yolo_v11_m(num_classes: int = 80, input_channels: int = 30, input_length: int = INPUT_LENGTH):
+def yolo_v11_m(num_classes: int = 80, input_channels: int = 30, input_length: int = INPUT_LENGTH, **arch):
     csp = [True, True, True]
     depth = [1, 1, 1, 1, 1, 2, 2, 2, 2]
     width = [32, 32, 64, 96, 128, 192, 192, 256]
-    return YOLO(width, depth, csp, num_classes, input_channels, input_length)
+    return YOLO(width, depth, csp, num_classes, input_channels, input_length, **arch)
 
 
-def yolo_v11_l(num_classes: int = 80, input_channels: int = 30, input_length: int = INPUT_LENGTH):
+def yolo_v11_l(num_classes: int = 80, input_channels: int = 30, input_length: int = INPUT_LENGTH, **arch):
     csp = [True, True, True]
     depth = [1, 1, 1, 1, 1, 2, 2, 2, 3]
     width = [32, 64, 64, 96, 128, 192, 256, 512]
-    return YOLO(width, depth, csp, num_classes, input_channels, input_length)
+    return YOLO(width, depth, csp, num_classes, input_channels, input_length, **arch)
 
-def yolo_v11_xl(num_classes: int = 80, input_channels: int = 30, input_length: int = INPUT_LENGTH):
+def yolo_v11_xl(num_classes: int = 80, input_channels: int = 30, input_length: int = INPUT_LENGTH, **arch):
     csp = [True, True, True]
     depth = [1, 3, 3, 3, 3, 3, 4, 4, 5]
     width = [32, 64, 64, 96, 128, 192, 256, 512]
-    return YOLO(width, depth, csp, num_classes, input_channels, input_length)
+    return YOLO(width, depth, csp, num_classes, input_channels, input_length, **arch)
 
-def get_model(size: str, num_classes: int, input_channels: int = 30, input_length: int = INPUT_LENGTH):
+def get_model(size: str, num_classes: int, input_channels: int = 30, input_length: int = INPUT_LENGTH, **arch):
     """
         Создаёт модель размера size ("nano", "small", "medium", "large", "xlarge").
         По умолчанию — конфигурация для вихретоковых данных (30 каналов, вход 49152).
+        arch — strides, bias_init, expected_objects (см. YOLO).
     """
     if size == "nano":
-        return yolo_v11_n(num_classes, input_channels, input_length)
+        return yolo_v11_n(num_classes, input_channels, input_length, **arch)
     if size == "small":
-        return yolo_v11_s(num_classes, input_channels, input_length)
+        return yolo_v11_s(num_classes, input_channels, input_length, **arch)
     if size == "medium":
-        return yolo_v11_m(num_classes, input_channels, input_length)
+        return yolo_v11_m(num_classes, input_channels, input_length, **arch)
     if size == "large":
-        return yolo_v11_l(num_classes, input_channels, input_length)
+        return yolo_v11_l(num_classes, input_channels, input_length, **arch)
     if size == "xlarge":
-        return yolo_v11_xl(num_classes, input_channels, input_length)
+        return yolo_v11_xl(num_classes, input_channels, input_length, **arch)

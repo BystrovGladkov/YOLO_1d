@@ -84,14 +84,17 @@ def test_export_wrapper_pads_without_resize():
 
 
 @pytest.mark.skipif(not FOLD0.is_file() or not PROCESSED.is_file(), reason="нет data/splits или data/processed")
-def test_trainer_runs_ecg_batch_through_loss(tmp_path):
+@pytest.mark.parametrize("arch", [{}, {"backbone_strides": "A", "bias_init": "1d"}])
+def test_trainer_runs_ecg_batch_through_loss(tmp_path, arch):
     """Сквозная проверка: Trainer с настройками ЭКГ, батч LUDB фолда 0 → модель → функция потерь."""
     from yolo_1d.yolo_1d import Trainer
 
     settings = TrainingSettings(names=["P", "QRS", "T"], dataset=str(FOLD0), results_path=str(tmp_path),
                                 input_channels=1, batch_size=4, num_workers=0,
-                                augmentations=AugmentationSettings(**ECG_AUG))
+                                augmentations=AugmentationSettings(**ECG_AUG), **arch)
     trainer = Trainer(settings)
+    expected = nn.head_strides(settings.backbone_strides)
+    assert tuple(int(s) for s in trainer._model.stride) == expected
     trainer._init_dataloaders()
     trainer._init_training()
     samples, targets = next(iter(trainer._train_loader))
