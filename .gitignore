@@ -158,3 +158,6 @@ runs
 # datasets (downloaded by data/download_*.py)
 data/raw/
 data/processed/
+# Dataset label caches
+labels.cache
+*.labels.cache

@@ -40,4 +40,19 @@ python data/prepare_ludb.py    # -> data/processed/ludb/ и data/ludb.yaml
 
 Выход `data/processed/ludb/`: `signals/<запись>_<отведение>.pt`, `labels/<запись>_<отведение>.txt`, `manifest.csv` (все 2400 отведений: зона, число волн, группа ритма, `usable`, причина исключения), `preprocessing.json` (параметры). Конфиг `data/ludb.yaml` содержит классы и пути; разбиения добавляет D4.
 
+### Разбиения (`data/splits/`, хранятся в git)
+
+```bash
+python data/make_splits.py     # после prepare_ludb.py; детерминировано (--seed 2026)
+```
+
+5-fold кросс-валидация **по записям** (все отведения записи — в одном сплите), стратифицированная по группе ритма (sinus / af_flutter / paced). В каждом тесте 40 записей: 35 sinus, 3 af_flutter, 2 paced. Каждая запись ровно один раз попадает в test, поэтому итоговые метрики считаются по объединению тестов всех фолдов (R2 §3.2). Из обучающей части фолда ~10 % записей по группам уходит в val (16 записей).
+
+- `folds.csv` — запись → группа ритма → тестовый фолд;
+- `fold_<k>/{train,val,test}.txt` — ID примеров (`<запись>_<отведение>`);
+- `fold_<k>.yaml` — конфиг `Dataset` фолда k (`--dataset data/splits/fold_<k>.yaml`);
+- `summary.json` — размеры сплитов и проверки.
+
+Формат конфига `Dataset` (обратно совместим со старыми конфигами): необязательный ключ `path` задаёт базовую папку относительных путей (относительно yaml-файла); `<split>_list` — список ID примеров из папки `<split>_data`. Кэш меток для списка пишется рядом с ним (`<список>.labels.cache`, в git не попадает) и пересоздаётся при изменении разметки.
+
 Лицензия: Open Data Commons Attribution v1.0. Цитировать: Kalyakulina A. I. et al., *LUDB: A New Open-Access Validation Tool for Electrocardiogram Delineation Algorithms*, IEEE Access 8, 2020, и PhysioNet (doi:10.13026/eegm-h675). Особенности разметки описаны в [docs/research/R1_ludb.md](../docs/research/R1_ludb.md).

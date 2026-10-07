@@ -21,6 +21,7 @@
 import argparse
 import csv
 import json
+import os
 import shutil
 import sys
 from datetime import date
@@ -45,8 +46,11 @@ def write_labels(path: Path, labels) -> None:
 
 def write_dataset_yaml(path: Path, out: Path) -> None:
     """Конфиг датасета: классы и пути. Ключи `<split>_data/<split>_labels` добавляет D4."""
-    rel = lambda p: p.relative_to(REPO).as_posix()  # noqa: E731
+    # пути относительно `path`, который сам задан относительно yaml-файла (см. Dataset._parse_yaml)
+    base = path.parent.resolve()
+    rel = lambda p: Path(os.path.relpath(p.resolve(), base)).as_posix()  # noqa: E731
     config = {
+        "path": ".",
         "names": {i: name for i, name in enumerate(CLASS_NAMES)},
         "signal_length": SIGNAL_LENGTH,
         "mode": "single_lead",
@@ -56,7 +60,7 @@ def write_dataset_yaml(path: Path, out: Path) -> None:
     }
     header = ("# LUDB для MyNet-1d: сгенерировано data/prepare_ludb.py.\n"
               "# Поотведенческие примеры (вход 1 × 5000, паддинг до 5120 в трансформациях).\n"
-              "# Разбиения train/val/test (ключи <split>_data, <split>_labels) добавляет D4 (data/splits/).\n")
+              "# Разбиения train/val/test — data/splits/fold_<k>.yaml (data/make_splits.py).\n")
     path.write_text(header + yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 

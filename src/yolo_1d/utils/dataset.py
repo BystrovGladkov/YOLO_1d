@@ -37,6 +37,10 @@ class Dataset(data.Dataset):
             Считывает их файла настроек:
             - путь к данным и разметке
             - Информацию о названиях классов и их количестве
+            - (необязательно) `<type>_list` — файл со списком ID примеров сплита
+            - (необязательно) `path` — базовая папка для относительных путей, задаётся
+              относительно самого yaml-файла. Без `path` относительные пути, как и раньше,
+              отсчитываются от текущей рабочей папки.
         """
         data = yaml.safe_load(open(self.filename, encoding="utf-8")) # Парсим yaml - файл
         
@@ -44,65 +48,97 @@ class Dataset(data.Dataset):
         self.class_names = [i for i in data["names"].values()]
         # Считаем количество классов
         self.num_classes = len(self.class_names)
+        # базовая папка для относительных путей
+        base = data.get("path")
+        if base is not None and not os.path.isabs(base):
+            base = os.path.join(os.path.dirname(os.path.abspath(self.filename)), base)
+        resolve = lambda p: p if (p is None or base is None or os.path.isabs(p)) else os.path.normpath(os.path.join(base, p))
         # Считываем путь к данным
-        self.data_path = data[f"{self.type}_data"]
+        self.data_path = resolve(data[f"{self.type}_data"])
         # Считываем путь к разметке
-        self.labels_path = data[f"{self.type}_labels"]
+        self.labels_path = resolve(data[f"{self.type}_labels"])
+        # Список ID примеров сплита (имена файлов без расширения); None — вся папка
+        self.list_path = resolve(data.get(f"{self.type}_list"))
         
     def _load_data(self):
         """
             Saves filenames of files with data.
+
+            Без списка берутся все файлы папки данных; со списком `<type>_list` — только
+            перечисленные ID (имя файла без расширения), в порядке списка.
         """
-        self.filenames = []
-        for file in os.listdir(self.data_path):
-            self.filenames.append(os.path.join(self.data_path, file))
+        files = sorted(os.listdir(self.data_path))
+        if self.list_path is None:
+            self.filenames = [os.path.join(self.data_path, file) for file in files]
+            return
+        by_id = {file.rsplit(".", 1)[0]: file for file in files}
+        with open(self.list_path, encoding="utf-8") as f:
+            ids = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+        missing = [i for i in ids if i not in by_id]
+        if missing:
+            raise FileNotFoundError(f"{len(missing)} примеров из {self.list_path} нет в {self.data_path}: {missing[:5]}")
+        self.filenames = [os.path.join(self.data_path, by_id[i]) for i in ids]
+
+    @staticmethod
+    def _read_label_file(label_file):
+        """
+            Reads labels of one sample. Returns array (n, 3) or None if labels are invalid.
+        """
+        try:
+            # read labels
+            if os.path.isfile(label_file):
+                with open(label_file) as f:
+                    label = [x.split() for x in f.read().strip().splitlines() if len(x)]
+                    label = numpy.array(label, dtype=numpy.float32)
+                nl = len(label)
+                if nl:
+                    # simple asserts,
+                    # TODO: better no to raise error but fix problem and show message
+                    assert (label >= 0).all()   # all parts of label must be positive
+                    assert label.shape[1] == 3  # 3 parts: class, center, width
+                    assert (label[:, 1:] <= 1).all() # check labels not exceed corners
+                    _, i = numpy.unique(label, axis=0, return_index=True)
+                    if len(i) < nl:  # check for duplicates
+                        label = label[i]  # delete duplicates
+                        # TODO: show amount of duplicates deleted
+                else:# no labels
+                    label = numpy.zeros((0, 3),dtype=numpy.float32)
+            else: # labels file not found (not a file)
+                label = numpy.zeros((0, 3),dtype=numpy.float32)
+        except FileNotFoundError: # labels file not found
+            label = numpy.zeros((0, 3), dtype=numpy.float32)
+        except AssertionError:
+            return None
+        return label
         
     def _load_labels(self):
         """
             Loads labels from cache and creates cache if it does not exist.
+
+            Кэш хранится рядом со списком сплита (`<type>_list` + ".labels.cache") или, без
+            списка, в папке разметки (`labels.cache`). Кэш пересоздаётся, если в нём нет
+            какого-либо из текущих файлов или папка разметки изменена позже кэша
+            (например, данные подготовлены заново). Примеры с некорректной разметкой
+            (значение None в кэше) исключаются из `filenames`, чтобы `labels` и `filenames` совпадали.
         """
-        # loading cache
-        path = os.path.join(self.labels_path, "labels.cache")
-        if os.path.exists(path):
-            self.labels = torch.load(path, weights_only=False)
-            return 
-        # cache not found
-        dict = {}
-        for filename in self.filenames:
-            try:
+        if self.list_path is not None:
+            path = self.list_path + ".labels.cache"
+        else:
+            path = os.path.join(self.labels_path, "labels.cache")
+        fresh = os.path.exists(path) and os.path.getmtime(path) >= os.path.getmtime(self.labels_path)
+        cache = torch.load(path, weights_only=False) if fresh else {}
+        if not all(filename in cache for filename in self.filenames):
+            # cache not found or stale
+            cache = {}
+            for filename in self.filenames:
                 # get filenames
                 name = os.path.basename(filename).rsplit(".", 1)[0] + ".txt"
-                label_file = os.path.join(self.labels_path, name)
-                # read labels
-                if os.path.isfile(label_file):
-                    with open(label_file) as f:
-                        label = [x.split() for x in f.read().strip().splitlines() if len(x)]
-                        label = numpy.array(label, dtype=numpy.float32)
-                    nl = len(label)
-                    if nl:
-                        # simple asserts,
-                        # TODO: better no to raise error but fix problem and show message
-                        assert (label >= 0).all()   # all parts of label must be positive
-                        assert label.shape[1] == 3  # 3 parts: class, center, width
-                        assert (label[:, 1:] <= 1).all() # check labels not exceed corners
-                        _, i = numpy.unique(label, axis=0, return_index=True)
-                        if len(i) < nl:  # check for duplicates
-                            label = label[i]  # delete duplicates
-                            # TODO: show amount of duplicates deleted
-                    else:# no labels
-                        label = numpy.zeros((0, 3),dtype=numpy.float32)
-                else: # labels file not found (not a file)
-                    label = numpy.zeros((0, 3),dtype=numpy.float32)
-            except FileNotFoundError: # labels file not found
-                label = numpy.zeros((0, 3), dtype=numpy.float32)
-            except AssertionError:
-                continue
-            # save labels
-            dict[filename] = label
-        # save cache
-        torch.save(dict, path)
-        self.labels = dict
-        return
+                cache[filename] = self._read_label_file(os.path.join(self.labels_path, name))
+            # save cache
+            torch.save(cache, path)
+        # порядок labels совпадает с filenames (важно для весов сэмплера в util.get_data_weights)
+        self.labels = {f: cache[f] for f in self.filenames if cache[f] is not None}
+        self.filenames = [f for f in self.filenames if f in self.labels]
     
     def load_signal(self, i) -> torch.Tensor:
         """
