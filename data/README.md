@@ -24,4 +24,20 @@ python data/download_ludb.py --check-only  # проверить уже скач�
 python data/ludb_report.py
 ```
 
+### Подготовка для обучения
+
+```bash
+python data/prepare_ludb.py    # -> data/processed/ludb/ и data/ludb.yaml
+```
+
+**Разметка на отведения — решение (2026-10-07): детекция поотведенческая.** Пример = одно отведение одной записи, вход сети 1 × 5000 (паддинг до 5120 в трансформациях), разметка — собственная разметка этого отведения. 12-канальный режим с агрегированной разметкой не используется.
+
+Что делает скрипт (подробнее — docstring `data/prepare_ludb.py`, `src/yolo_1d/utils/ludb_preprocess.py`):
+1. Z-score по всему отведению (полосовой фильтр — опция `--bandpass`, по умолчанию выключен).
+2. Сигнал вне размеченной зоны `[первый onset − 10, последний offset + 10]` отсчётов заполняется нулями (`--fill median` — медианой отведения). Неразмеченные волны на краях в сеть не попадают; вход одинаков на обучении и валидации.
+3. Разметка: строки `class center width`, нормированные на 5000; left = onset, right = offset; P = 0, QRS = 1, T = 2.
+4. 24 отведения, где внутри зоны есть волна без метки (дефект разметки, см. отчёт D2), исключаются из всех выборок (`--keep-defective` — оставить).
+
+Выход `data/processed/ludb/`: `signals/<запись>_<отведение>.pt`, `labels/<запись>_<отведение>.txt`, `manifest.csv` (все 2400 отведений: зона, число волн, группа ритма, `usable`, причина исключения), `preprocessing.json` (параметры). Конфиг `data/ludb.yaml` содержит классы и пути; разбиения добавляет D4.
+
 Лицензия: Open Data Commons Attribution v1.0. Цитировать: Kalyakulina A. I. et al., *LUDB: A New Open-Access Validation Tool for Electrocardiogram Delineation Algorithms*, IEEE Access 8, 2020, и PhysioNet (doi:10.13026/eegm-h675). Особенности разметки описаны в [docs/research/R1_ludb.md](../docs/research/R1_ludb.md).

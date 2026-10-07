@@ -157,3 +157,4 @@ cython_debug/
 runs
 # datasets (downloaded by data/download_*.py)
 data/raw/
+data/processed/

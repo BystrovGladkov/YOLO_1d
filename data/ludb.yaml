@@ -1,0 +1,12 @@
+# LUDB для MyNet-1d: сгенерировано data/prepare_ludb.py.
+# Поотведенческие примеры (вход 1 × 5000, паддинг до 5120 в трансформациях).
+# Разбиения train/val/test (ключи <split>_data, <split>_labels) добавляет D4 (data/splits/).
+names:
+  0: P
+  1: QRS
+  2: T
+signal_length: 5000
+mode: single_lead
+data: data/processed/ludb/signals
+labels: data/processed/ludb/labels
+manifest: data/processed/ludb/manifest.csv
