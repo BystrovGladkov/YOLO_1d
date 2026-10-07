@@ -1,0 +1,12 @@
+{
+  "date": "2026-10-07T15:40:04",
+  "command": "run_experiment.py experiments/configs/e2s2_bs16.yaml",
+  "git_hash": "9d7769e98555f922cd0e15bd14d237811c31ef16",
+  "git_branch": "EKG",
+  "git_dirty": false,
+  "python": "3.11.9",
+  "torch": "2.7.1+cu128",
+  "cuda": "12.8",
+  "gpu": "NVIDIA GeForce RTX 5060 Ti",
+  "platform": "Windows-10-10.0.19045-SP0"
+}

@@ -1,0 +1,16 @@
+date,name,git_hash,git_dirty,folds,seeds,F1_mean6_pooled,sd_mean6_ms_pooled,F1_mean6_folds_mean,F1_mean6_folds_sd,config
+2026-10-07T12:08:58,e1_overfit8,932582e885,False,0,0,0.9912,7.36,0.9912,0.0000,experiments/configs/e1_overfit8.yaml
+2026-10-07T12:14:06,e1_fold0_short,932582e885,False,0,0,0.9800,12.92,0.9800,0.0000,experiments/configs/e1_fold0_short.yaml
+2026-10-07T12:35:43,d5_fold0_short,0b47b3817e,True,0,0,0.9769,12.90,0.9769,0.0000,experiments/configs/d5_fold0_short.yaml
+2026-10-07T13:30:54,e2s1_A_nano,9d7769e985,False,0 1,0,0.9775,12.71,0.9774,0.0024,experiments/configs/e2s1_A_nano.yaml
+2026-10-07T13:42:26,e2s1_B_nano,9d7769e985,False,0 1,0,0.9827,13.38,0.9827,0.0005,experiments/configs/e2s1_B_nano.yaml
+2026-10-07T13:56:31,e2s1_C_nano,9d7769e985,False,0 1,0,0.9762,13.03,0.9763,0.0027,experiments/configs/e2s1_C_nano.yaml
+2026-10-07T14:09:08,e2s1_A_small,9d7769e985,False,0 1,0,0.9834,13.59,0.9833,0.0010,experiments/configs/e2s1_A_small.yaml
+2026-10-07T14:26:28,e2s1_A_medium,9d7769e985,False,0 1,0,0.9801,13.23,0.9800,0.0014,experiments/configs/e2s1_A_medium.yaml
+2026-10-07T14:46:17,e2s2_ref,9d7769e985,False,0 1,0,0.9878,14.02,0.9878,0.0001,experiments/configs/e2s2_ref.yaml
+2026-10-07T15:01:00,e2s2_small,9d7769e985,False,0 1,0,0.9874,14.17,0.9873,0.0019,experiments/configs/e2s2_small.yaml
+2026-10-07T15:15:01,e2s2_lr003,9d7769e985,False,0 1,0,0.9790,14.31,0.9792,0.0050,experiments/configs/e2s2_lr003.yaml
+2026-10-07T15:23:49,e2s2_lr03,9d7769e985,False,0 1,0,0.9873,13.83,0.9873,0.0004,experiments/configs/e2s2_lr03.yaml
+2026-10-07T15:40:04,e2s2_bs16,9d7769e985,False,0 1,0,0.9801,13.83,0.9803,0.0066,experiments/configs/e2s2_bs16.yaml
+2026-10-07T15:51:30,e2s2_bs64,9d7769e985,False,0 1,0,0.9879,13.69,0.9879,0.0011,experiments/configs/e2s2_bs64.yaml
+2026-10-07T16:07:31,baseline,9d7769e985,False,0 1 2 3 4,0 1,0.9859,13.84,0.9855,0.0037,experiments/configs/baseline.yaml

@@ -84,6 +84,8 @@ def train_split_metrics(run_dir: Path, thresholds) -> dict:
     for split in ("train", "val", "test"):
         for key in ("data", "labels", "list"):
             dataset[f"{split}_{key}"] = str(base / dataset[f"{split}_{key}"])
+    if "zones" in dataset:  # файл зон маскирования краёв (D5)
+        dataset["zones"] = str(base / dataset["zones"])
     dataset.pop("path", None)
     with tempfile.TemporaryDirectory() as tmp:
         cfg = Path(tmp) / "train_as_test.yaml"

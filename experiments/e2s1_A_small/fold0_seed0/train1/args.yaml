@@ -1,0 +1,62 @@
+augmentations:
+  adversarial: 0.0
+  channel_masking: 0.0
+  channel_scaling: 0.0
+  edge_margin_end:
+  - 0
+  - 24
+  edge_margin_eval:
+  - 6
+  - 12
+  edge_margin_start:
+  - 0
+  - 12
+  input_length: 5120
+  mark_scaling: 300
+  mix_up: 0.0
+  mix_up_alpha: 20.0
+  mosaic: 0.0
+  phase_spectrum_noise: 0.0
+  random_invert: 0.0
+  random_jitter: 0.0
+  random_resize: 0.0
+  random_reverse: 0.0
+  regular_length: 5000
+  square_noises: 0.0
+  time_masking: 0.0
+  validation_resize: false
+backbone_strides: A
+batch_size: 32
+best_metric: F1_mean6
+bias_init: 1d
+dataset: E:\git\YOLO_EKG\data\splits\fold_0.yaml
+delineation_conf: 0.25
+delineation_metrics: true
+early_stopping_epochs: 20
+ema_decay: 0.999
+ema_tau: 200.0
+enable_amp: false
+epochs: 80
+exclude_boundary_points: true
+expected_objects: 24.0
+input_channels: 1
+max_lr: 0.01
+min_lr: 0.0001
+model_size: small
+momentum: 0.937
+names:
+- P
+- QRS
+- T
+nms_iou: 0.65
+num_workers: 0
+project: train
+results_path: E:\git\YOLO_EKG\experiments\e2s1_A_small\fold0_seed0
+resume: false
+seed: 0
+starting_checkpoint: null
+warmup_epochs: 3.0
+weight_box: 7.5
+weight_cls: 0.5
+weight_decay: 0.0005
+weight_dfl: 1.5

@@ -1,0 +1,13 @@
+{
+  "fold": 1,
+  "seed": 0,
+  "train_dir": "train1",
+  "checkpoint": "best.pt",
+  "duration_s": 521.0,
+  "summary": {
+    "F1_mean6": 0.9843242590463531,
+    "sd_mean6_ms": 13.298591026267166,
+    "mae_mean6_ms": 7.637416422616734,
+    "cse_fraction": 0.6
+  }
+}

@@ -1,0 +1,12 @@
+e2s1_A_nano exit=0 13:42:13
+e2s1_B_nano exit=0 13:56:27
+e2s1_C_nano exit=0 14:09:04
+e2s1_A_small exit=0 14:26:24
+e2s1_A_medium exit=0 14:43:45
+e2s2_ref exit=0 15:00:55
+e2s2_small exit=0 15:14:57
+e2s2_lr003 exit=0 15:23:45
+e2s2_lr03 exit=0 15:39:59
+e2s2_bs16 exit=0 15:51:26
+e2s2_bs64 exit=0 16:04:29
+baseline exit=0 17:53:58

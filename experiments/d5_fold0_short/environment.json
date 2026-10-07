@@ -1,0 +1,12 @@
+{
+  "date": "2026-10-07T12:35:43",
+  "command": "run_experiment.py experiments/configs/d5_fold0_short.yaml",
+  "git_hash": "0b47b3817e4c8e4ac8693a00d0b2f0e376b43c06",
+  "git_branch": "EKG",
+  "git_dirty": true,
+  "python": "3.11.9",
+  "torch": "2.7.1+cu128",
+  "cuda": "12.8",
+  "gpu": "NVIDIA GeForce RTX 5060 Ti",
+  "platform": "Windows-10-10.0.19045-SP0"
+}
