@@ -20,3 +20,4 @@ date,name,git_hash,git_dirty,folds,seeds,F1_mean6_pooled,sd_mean6_ms_pooled,F1_m
 2026-10-07T21:30:11,abl_full_minus_A,48a3df53b9,True,0 1 2 3 4,0,0.9873,13.39,0.9873,0.0029,experiments/configs/abl_full_minus_A.yaml
 2026-10-07T22:23:31,abl_full_minus_M,48a3df53b9,True,0 1 2 3 4,0,0.9876,13.60,0.9876,0.0027,experiments/configs/abl_full_minus_M.yaml
 2026-10-08T10:44:32,abl_full_minus_X,48a3df53b9,True,0 1 2 3 4,0,0.9888,13.66,0.9888,0.0025,experiments/configs/abl_full_minus_X.yaml
+2026-10-08T12:42:14,final,f576e86a09,False,0 1 2 3 4,2 3,0.9883,13.60,0.9873,0.0033,experiments/configs/final.yaml
