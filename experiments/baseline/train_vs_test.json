@@ -1,0 +1,34 @@
+{
+  "fold0_seed0": {
+    "train": {
+      "F1_mean6": 0.9942538282425608,
+      "sd_mean6_ms": 10.146406416031875,
+      "mae_mean6_ms": 5.890779584505733,
+      "cse_fraction": 0.8,
+      "n_defined": 6,
+      "n_leads": 1713
+    },
+    "test": {
+      "F1_mean6": 0.9871499606685048,
+      "sd_mean6_ms": 14.21437122167552,
+      "mae_mean6_ms": 7.805324546229269,
+      "cse_fraction": 0.6
+    }
+  },
+  "fold3_seed0": {
+    "train": {
+      "F1_mean6": 0.9950799467118433,
+      "sd_mean6_ms": 8.970021178544803,
+      "mae_mean6_ms": 5.250077139240477,
+      "cse_fraction": 1.0,
+      "n_defined": 6,
+      "n_leads": 1705
+    },
+    "test": {
+      "F1_mean6": 0.9794098896439335,
+      "sd_mean6_ms": 13.302845489846005,
+      "mae_mean6_ms": 7.547213088868308,
+      "cse_fraction": 0.6
+    }
+  }
+}
