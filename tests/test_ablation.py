@@ -49,7 +49,8 @@ def test_candidate_groups_and_configs(tmp_path, monkeypatch):
     aug = config["training"]["augmentations"]
     assert aug["pipeline"] == "ecg" and aug["ecg"] == {"wander_p": 0.5, "hrv_warp_p": 0.5}
     assert config["ablation"]["augmentations"] == ["N1", "T2"]
-    # всё остальное — как в baseline
+    # всё остальное — как в baseline (num_workers влияет только на скорость загрузки, E3)
     base = yaml.safe_load((REPO / "experiments" / "configs" / "baseline.yaml").read_text(encoding="utf-8"))
-    assert {k: v for k, v in config["training"].items() if k != "augmentations"} == \
-           {k: v for k, v in base["training"].items() if k != "augmentations"}
+    skip = {"augmentations", "num_workers"}
+    assert {k: v for k, v in config["training"].items() if k not in skip} == \
+           {k: v for k, v in base["training"].items() if k not in skip}

@@ -57,6 +57,17 @@ python data/make_splits.py     # после prepare_ludb.py; детермини�
 
 Лицензия: Open Data Commons Attribution v1.0.
 
+### Режим MC: 12 отведений на вход (M6)
+```bash
+python data/prepare_ludb_mc.py   # после prepare_ludb.py → data/processed/ludb_mc/
+python data/make_splits_mc.py    # после make_splits.py  → data/splits/fold_<k>/{train,val,test}_mc.txt, fold_<k>_mc.yaml
+```
+- Пример — запись: `signals/<запись>.pt` (12, 5000), Z-score по отведению той же `prepare_lead`, что в режиме S (канал k = файл отведения S бит в бит).
+- Разметка `labels/<запись>.txt`: `class lead center width` (lead — индекс 0..11 в порядке I, II, III, aVR, aVL, aVF, V1–V6).
+- `leads.csv`: зона разметки и пригодность каждого отведения. 24 непригодных отведения (7 записей) остаются во входе, но исключаются из лосса и метрик (`valid` в `MultiLeadDataset`).
+- Фолды — те же записи, что в режиме S (списки выводятся из `fold_<k>/*.txt`); тест — 200 записей, 2376 отведений, как в S.
+- Загрузка: `yolo_1d.utils.multilead_dataset.MultiLeadDataset` (`mode: multi_lead`), маска краёв — по зоне каждого отведения с независимым δ (R5 §2.1).
+
 ## MIT-BIH Noise Stress Test Database (шумы для аугментации N5)
 
 ```bash
