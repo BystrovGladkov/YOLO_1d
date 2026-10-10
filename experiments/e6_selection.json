@@ -1,0 +1,41 @@
+{
+  "candidates": [
+    {
+      "name": "e6_bs8_lr01",
+      "epochs": 271,
+      "best_epoch": 154,
+      "val_F1_mean6": 0.999,
+      "val_sd_mean6_ms": 18.502
+    },
+    {
+      "name": "e6_bs8_lr02",
+      "epochs": 170,
+      "best_epoch": 53,
+      "val_F1_mean6": 0.999,
+      "val_sd_mean6_ms": 18.811
+    },
+    {
+      "name": "e6_bs4_lr01",
+      "epochs": 136,
+      "best_epoch": 101,
+      "val_F1_mean6": 0.999,
+      "val_sd_mean6_ms": 18.688
+    },
+    {
+      "name": "e6_small",
+      "epochs": 177,
+      "best_epoch": 165,
+      "val_F1_mean6": 0.999,
+      "val_sd_mean6_ms": 18.288
+    },
+    {
+      "name": "e6_head2",
+      "epochs": 159,
+      "best_epoch": 38,
+      "val_F1_mean6": 0.999,
+      "val_sd_mean6_ms": 19.124
+    }
+  ],
+  "chosen": "e6_bs8_lr01",
+  "rule": "E6 → E7: выбор настроек обучения режима MC по val и генерация конфигов E7.\n\nПравило выбора (зафиксировано до просмотра итогов E6):\n1. Кандидаты: e6_bs8_lr01 (эталон), e6_bs8_lr02, e6_bs4_lr01, e6_small, e6_head2 (fold 0, seed 0, без аугментаций).\n2. Оценка — лучшая эпоха по val ⟨F1⟩₆ из step.csv (как выбор best.pt).\n3. Побеждает максимум val ⟨F1⟩₆; кандидаты в пределах 0.1 п.п. от максимума считаются равными, среди них —\n   меньший val ⟨σ⟩₆ (мс), при разнице σ < 0.3 мс — эталон (более простая конфигурация)."
+}

@@ -1,0 +1,12 @@
+{
+  "date": "2026-10-10T11:50:36",
+  "command": "run_experiment.py experiments/configs/e6_overfit8.yaml",
+  "git_hash": "d5998212038a0795306ba0ac2266c984fcba2725",
+  "git_branch": "EKG",
+  "git_dirty": false,
+  "python": "3.11.9",
+  "torch": "2.7.1+cu128",
+  "cuda": "12.8",
+  "gpu": "NVIDIA GeForce RTX 5060 Ti",
+  "platform": "Windows-10-10.0.19045-SP0"
+}

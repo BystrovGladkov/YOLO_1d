@@ -1,0 +1,49 @@
+name: e6_head2
+description: ширина веток головы ×2, batch 8, lr 0.01
+dataset: data/splits/fold_{fold}_mc.yaml
+manifest: data/processed/ludb/manifest.csv
+folds:
+- 0
+seeds:
+- 0
+training:
+  names:
+  - P
+  - QRS
+  - T
+  model_size: nano
+  input_channels: 12
+  backbone_strides: B
+  bias_init: 1d
+  expected_objects: 24
+  epochs: 450
+  batch_size: 8
+  num_workers: 0
+  early_stopping_epochs: 120
+  max_lr: 0.01
+  min_lr: 0.0001
+  warmup_epochs: 9
+  ema_decay: 0.999
+  ema_tau: 200
+  delineation_metrics: true
+  delineation_conf: 0.25
+  best_metric: F1_mean6
+  nms_iou: 0.2
+  augmentations:
+    regular_length: 5000
+    input_length: 5120
+    validation_resize: false
+    square_noises: 0
+    random_resize: 0
+    phase_spectrum_noise: 0
+    random_jitter: 0
+    random_invert: 0
+    random_reverse: 0
+    channel_scaling: 0
+    time_masking: 0
+    channel_masking: 0
+    mosaic: 0
+    mix_up: 0
+    adversarial: 0
+  n_leads: 12
+  head_width_mult: 2.0

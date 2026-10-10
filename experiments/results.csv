@@ -21,3 +21,9 @@ date,name,git_hash,git_dirty,folds,seeds,F1_mean6_pooled,sd_mean6_ms_pooled,F1_m
 2026-10-07T22:23:31,abl_full_minus_M,48a3df53b9,True,0 1 2 3 4,0,0.9876,13.60,0.9876,0.0027,experiments/configs/abl_full_minus_M.yaml
 2026-10-08T10:44:32,abl_full_minus_X,48a3df53b9,True,0 1 2 3 4,0,0.9888,13.66,0.9888,0.0025,experiments/configs/abl_full_minus_X.yaml
 2026-10-08T12:42:14,final,f576e86a09,False,0 1 2 3 4,2 3,0.9883,13.60,0.9873,0.0033,experiments/configs/final.yaml
+2026-10-10T11:50:36,e6_overfit8,d599821203,False,0,0,0.9982,7.72,0.9982,0.0000,experiments/configs/e6_overfit8.yaml
+2026-10-10T12:01:53,e6_bs8_lr01,d599821203,True,0,0,0.9883,15.73,0.9883,0.0000,experiments/configs/e6_bs8_lr01.yaml
+2026-10-10T12:14:13,e6_bs8_lr02,d599821203,True,0,0,0.9887,16.58,0.9887,0.0000,experiments/configs/e6_bs8_lr02.yaml
+2026-10-10T12:21:55,e6_bs4_lr01,d599821203,True,0,0,0.9912,15.95,0.9912,0.0000,experiments/configs/e6_bs4_lr01.yaml
+2026-10-10T12:30:07,e6_small,d599821203,True,0,0,0.9886,16.08,0.9886,0.0000,experiments/configs/e6_small.yaml
+2026-10-10T12:39:08,e6_head2,d599821203,True,0,0,0.9902,16.72,0.9902,0.0000,experiments/configs/e6_head2.yaml

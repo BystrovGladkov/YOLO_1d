@@ -1,0 +1,6 @@
+e6_overfit8 exit=0 12:01:49
+e6_bs8_lr01 exit=0 12:14:10
+e6_bs8_lr02 exit=0 12:21:52
+e6_bs4_lr01 exit=0 12:30:04
+e6_small exit=0 12:39:05
+e6_head2 exit=0 12:46:15
