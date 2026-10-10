@@ -18,8 +18,9 @@ import pandas as pd
 
 from yolo_1d.nets import nn
 from yolo_1d.utils import util
-from yolo_1d.nets.criterion import ComputeLoss
+from yolo_1d.nets.criterion import ComputeLoss, MultiLeadLoss, flatten_lead_targets
 from yolo_1d.utils.dataset import Dataset
+from yolo_1d.utils.multilead_dataset import MultiLeadDataset, dataset_class
 from yolo_1d.utils.delineation import (DelineationMetrics, apply_thresholds, best_class_thresholds,
                                        boxes_to_intervals, detections_to_intervals, format_table)
 from yolo_1d.utils.transforms import EdgeMask, build_training_transforms, build_validation_transform
@@ -85,7 +86,26 @@ class Trainer:
                             input_length=self._settings.augmentations.input_length,
                             strides=self._settings.backbone_strides,
                             bias_init=self._settings.bias_init,
-                            expected_objects=self._settings.expected_objects)
+                            expected_objects=self._settings.expected_objects,
+                            n_leads=self._settings.n_leads,
+                            head_width_mult=self._settings.head_width_mult)
+
+    @property
+    def _n_leads(self) -> int:
+        return self._settings.n_leads
+
+    @property
+    def _rows_per_batch(self) -> int:
+        """Эффективный батч в «отведениях»: в режиме MC пример даёт n_leads строк лосса (масштаб лосса,
+        накопление градиента и weight decay считаются от него; в режиме S равен batch_size)."""
+        return self._settings.batch_size * self._n_leads
+
+    def _make_criterion(self, model):
+        """Исходный ComputeLoss; в режиме MC — он же по отведениям с суммированием (MultiLeadLoss, M7)."""
+        criterion = ComputeLoss(model, self._settings.weight_box, self._settings.weight_cls, self._settings.weight_dfl)
+        if self._n_leads == 1:
+            return criterion
+        return MultiLeadLoss(criterion, self._n_leads, self._settings.lead_loss_norm)
         
     def _init_model(self):
         """
@@ -109,18 +129,22 @@ class Trainer:
         train_mask = EdgeMask(aug.edge_margin_start, aug.edge_margin_end)
         start, end = aug.edge_margin_eval
         eval_mask = EdgeMask((start, start), (end, end))
-        # load dataset
-        self._train_dataset = Dataset(self._settings.dataset, transform=self._train_transform, type="train", 
+        # load dataset: `mode: multi_lead` в yaml — режим MC (MultiLeadDataset), иначе — поотведенческий Dataset
+        dataset_cls = dataset_class(self._settings.dataset)
+        if (dataset_cls is MultiLeadDataset) != (self._n_leads > 1) or                 (dataset_cls is MultiLeadDataset and self._n_leads != MultiLeadDataset.n_leads):
+            raise ValueError(f"датасет {self._settings.dataset} ({dataset_cls.__name__}) не согласован с n_leads = "
+                             f"{self._n_leads}: для режима MC нужны n_leads = 12 и yaml с `mode: multi_lead`")
+        self._train_dataset = dataset_cls(self._settings.dataset, transform=self._train_transform, type="train", 
                                       mosaic_prob=self._settings.augmentations.mosaic,
                                       mix_up_prob=self._settings.augmentations.mix_up,
                                       mix_up_alpha=self._settings.augmentations.mix_up_alpha,
                                       edge_mask=train_mask,
                                       splice_prob=aug.ecg.mosaic_p if aug.pipeline == "ecg" else 0,
                                       beat_splice_prob=aug.ecg.splice_p if aug.pipeline == "ecg" else 0)
-        self._val_dataset = Dataset(self._settings.dataset, transform=self._test_transform, type="val",
-                                    edge_mask=eval_mask)
-        self._test_dataset = Dataset(self._settings.dataset, transform=self._test_transform, type="test",
-                                     edge_mask=eval_mask)
+        self._val_dataset = dataset_cls(self._settings.dataset, transform=self._test_transform, type="val",
+                                        edge_mask=eval_mask)
+        self._test_dataset = dataset_cls(self._settings.dataset, transform=self._test_transform, type="test",
+                                         edge_mask=eval_mask)
         
         weights = util.get_data_weights(self._train_dataset)
         sampler = torch.utils.data.WeightedRandomSampler(weights=weights,
@@ -130,7 +154,7 @@ class Trainer:
         # при num_workers > 0: воркеры живут всё обучение (на Windows запуск воркера дорогой), а numpy и
         # random в каждом воркере сидируются от torch-сида воркера — аугментации воспроизводимы
         workers = self._settings.num_workers
-        loader_kwargs = dict(num_workers=workers, pin_memory=True, collate_fn=Dataset.collate_fn)
+        loader_kwargs = dict(num_workers=workers, pin_memory=True, collate_fn=dataset_cls.collate_fn)
         if workers > 0:
             loader_kwargs.update(persistent_workers=True, worker_init_fn=_seed_worker)
         self._train_loader = data.DataLoader(self._train_dataset, self._settings.batch_size, sampler=sampler,
@@ -143,9 +167,9 @@ class Trainer:
             Initializes everything needed for training.
         """
 
-        # scaling of Regularization to make it independent of batch_size
-        self._accumulate = max(round(64 / (self._settings.batch_size)), 1)
-        self._settings.weight_decay *= self._settings.batch_size * self._accumulate / 64
+        # scaling of Regularization to make it independent of batch_size (в режиме MC — батч в отведениях)
+        self._accumulate = max(round(64 / self._rows_per_batch), 1)
+        self._settings.weight_decay *= self._rows_per_batch * self._accumulate / 64
         # create optimizer
         self._optimizer = torch.optim.SGD(util.set_params(self._model, self._settings.weight_decay),
                                 self._settings.min_lr, self._settings.momentum, nesterov=True)
@@ -163,8 +187,7 @@ class Trainer:
         # automatic mixed precision scaling of gradients
         self._amp_scale = torch.amp.GradScaler() #if self._settings.enable_amp else None
         # loss function
-        self._criterion = ComputeLoss(self._model, self._settings.weight_box,
-                                          self._settings.weight_cls, self._settings.weight_dfl)
+        self._criterion = self._make_criterion(self._model)
         
     def _prepare_transforms(self):
         """
@@ -310,10 +333,10 @@ class Trainer:
                     avg_box_loss.update(loss_box.item(), samples.size(0))
                     avg_cls_loss.update(loss_cls.item(), samples.size(0))
                     avg_dfl_loss.update(loss_dfl.item(), samples.size(0))
-                    # scale loss by batch_size
-                    loss_box *= self._settings.batch_size
-                    loss_cls *= self._settings.batch_size
-                    loss_dfl *= self._settings.batch_size
+                    # scale loss by batch_size (в режиме MC — батч в отведениях)
+                    loss_box *= self._rows_per_batch
+                    loss_cls *= self._rows_per_batch
+                    loss_dfl *= self._rows_per_batch
 
                     # Backward
                     self._amp_scale.scale(loss_box + loss_cls + loss_dfl).backward()
@@ -391,7 +414,8 @@ class Trainer:
             (Precision, Recall, AP50, AP) по классам для печати.
         samples
             Список (детекции NMS (n, 4) [x1, x2, conf, cls] в отсчётах входа, cls (m, 1), box (m, 2))
-            в порядке `loader.dataset.filenames` (загрузчики val/test не перемешиваются).
+            в порядке `loader.dataset.filenames` (загрузчики val/test не перемешиваются); в режиме MC — по
+            пригодным отведениям в порядке `MultiLeadDataset.lead_ids()`, координаты — в отсчётах отведения.
         """
         device = self._device
         model = self._ema.ema
@@ -409,12 +433,18 @@ class Trainer:
         for samples, targets in p_bar:
             samples = samples.to(device).float()
             w = samples.shape[2]  # length of signal
+            # режим MC: строки выхода — отведения (b·n_leads + k); цели перенумеровываются так же,
+            # непригодные отведения (valid = False) пропускаются в метриках
+            row_valid = None
+            if self._n_leads > 1:
+                criterion_targets = targets
+                targets, row_valid = flatten_lead_targets(targets, self._n_leads)
             scale = torch.tensor((w, w), device=device)
             # Inference
             if criterion is not None:
                 raw, outputs = model(samples)
                 # Calculate loss
-                loss_box, loss_cls, loss_dfl = criterion(raw, targets)
+                loss_box, loss_cls, loss_dfl = criterion(raw, criterion_targets if row_valid is not None else targets)
                 # update average losses
                 avg_box_loss.update(loss_box.item(), samples.size(0))
                 avg_cls_loss.update(loss_cls.item(), samples.size(0))
@@ -425,6 +455,8 @@ class Trainer:
             outputs = util.non_max_suppression(outputs, conf_threshold, self._settings.nms_iou)
             # Metrics
             for i, output in enumerate(outputs):
+                if row_valid is not None and not row_valid[i]:
+                    continue
                 idx = targets['idx'] == i
                 cls = targets['cls'][idx].to(device)
                 box = targets['box'][idx].to(device)
@@ -479,8 +511,7 @@ class Trainer:
     @torch.no_grad()
     def validate(self):
         self._init_dataloaders()
-        criterion = ComputeLoss(self._ema.ema, self._settings.weight_box,
-                        self._settings.weight_cls, self._settings.weight_dfl)
+        criterion = self._make_criterion(self._ema.ema)
         r, per_class, per_sample = self._evaluate_loader(self._val_loader, criterion)
         # Print results
         self._print_detection_results(r, per_class)
@@ -528,7 +559,10 @@ class Trainer:
         self._init_dataloaders()
         loader = {"val": self._val_loader, "test": self._test_loader}[split]
         r, per_class, per_sample = self._evaluate_loader(loader, desc=split)
-        ids = [os.path.basename(f).rsplit(".", 1)[0] for f in loader.dataset.filenames]
+        if isinstance(loader.dataset, MultiLeadDataset):
+            ids = loader.dataset.lead_ids()  # <запись>_<отведение> пригодных отведений, в порядке строк выхода
+        else:
+            ids = [os.path.basename(f).rsplit(".", 1)[0] for f in loader.dataset.filenames]
         pairs = self._to_intervals(per_sample, self._settings.augmentations.input_length)
         return [{"id": i, "pred": p, "ref": t} for i, (p, t) in zip(ids, pairs)], r
 
@@ -590,6 +624,8 @@ class Trainer:
 
     @torch.no_grad()
     def predict(self, data: torch.Tensor, conf: float = 0.1) -> torch.Tensor:
+        """Детекции для сигнала (channels, length) или батча; в режиме MC — список по строкам
+        «батча отведений» (b·n_leads + k — отведение k примера b)."""
         # create empty boxes and labels to pass into transform
         bboxes, labels = torch.zeros((0,2), device=data.device, dtype=torch.float), torch.zeros((0), device=data.device, dtype=torch.float)
         # convert data to float

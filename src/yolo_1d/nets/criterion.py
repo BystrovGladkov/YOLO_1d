@@ -306,3 +306,57 @@ class ComputeLoss:
         loss_dfl *= self.weight_dfl  # dfl gain
 
         return loss_box, loss_cls, loss_dfl
+
+
+# ---------------------------------------------------------------------------------------------- режим MC (M7)
+def flatten_lead_targets(targets: dict, n_leads: int):
+    """Цели батча записей → цели «батча отведений» (строка b·n_leads + k — отведение k примера b).
+
+    targets: cls (n, 1), box (n, 2), idx (n,) — пример, lead (n,) — отведение, valid (B, n_leads) — отведения
+    в лоссе/метриках. Возвращает (targets с idx по отведениям, row_valid (B·n_leads,) bool).
+    """
+    idx = targets["idx"].view(-1).long() * n_leads + targets["lead"].view(-1).long()
+    valid = targets["valid"].reshape(-1).bool()
+    return {"cls": targets["cls"], "box": targets["box"], "idx": idx.to(targets["idx"].dtype)}, valid
+
+
+class MultiLeadLoss:
+    """Лосс режима MC (M7, R5 §2.3): исходный `ComputeLoss` (TAL, DFL, BCE, веса), посчитанный для каждого
+    отведения отдельно и просуммированный по отведениям.
+
+    Выход головы с n_leads наборами — «батч отведений» (B·n_leads, no, A) (`Head.forward`), поэтому каждое
+    отведение — отдельная строка: ассайнер и все слагаемые для разных отведений независимы. Отведения
+    с valid = False (непригодная разметка, R5 §2.2) из лосса исключаются.
+
+    norm
+        "joint" — сумма по отведениям, делённая на суммарный target_scores батча (масштаб как в режиме S
+        с батчем из B·n_leads отведений); "per_lead" — лосс каждого отведения нормируется отдельно, затем сумма.
+    """
+
+    def __init__(self, criterion: ComputeLoss, n_leads: int, norm: str = "joint"):
+        if norm not in ("joint", "per_lead"):
+            raise ValueError(f"norm должен быть 'joint' или 'per_lead', получено {norm!r}")
+        self.criterion, self.n_leads, self.norm = criterion, n_leads, norm
+
+    def _select(self, outputs, targets, rows: torch.Tensor):
+        """Строки `rows` (bool по батчу отведений) и цели этих строк с перенумерованными idx."""
+        new_index = torch.cumsum(rows.long(), 0) - 1
+        idx = targets["idx"].long()
+        keep = rows[idx.to(rows.device)].cpu()
+        sel = {"cls": targets["cls"][keep], "box": targets["box"][keep],
+               "idx": new_index.cpu()[idx[keep]].to(targets["idx"].dtype)}
+        return [o[rows.to(o.device)] for o in outputs], sel
+
+    def __call__(self, outputs, targets):
+        flat, valid = flatten_lead_targets(targets, self.n_leads)
+        if self.norm == "joint":
+            return self.criterion(*self._select(outputs, flat, valid))
+        total = None
+        lead_of_row = torch.arange(valid.numel()) % self.n_leads
+        for k in range(self.n_leads):
+            rows = valid & (lead_of_row == k)
+            if not rows.any():
+                continue
+            losses = self.criterion(*self._select(outputs, flat, rows))
+            total = losses if total is None else tuple(a + b for a, b in zip(total, losses))
+        return total

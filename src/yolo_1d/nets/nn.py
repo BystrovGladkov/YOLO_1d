@@ -298,33 +298,47 @@ class Head(torch.nn.Module):
     strides = torch.empty(0)
     input_length = INPUT_LENGTH  # длина входа сети; задаётся моделью YOLO
 
-    def __init__(self, nc=80, filters=()):
+    def __init__(self, nc=80, filters=(), n_leads: int = 1, width_mult: float = 1.0):
+        """
+            n_leads
+                Число наборов предсказаний (режим MC, M7): выходные 1×1-свёртки box и cls расширяются в
+                n_leads раз, промежуточные слои голов общие. Выход переупорядочивается в «батч отведений»
+                (B·n_leads, no, A): строка b·n_leads + k — предсказания отведения k примера b. При n_leads = 1
+                веса и выход совпадают с исходной головой.
+            width_mult
+                Множитель ширины промежуточных слоёв веток box и cls (1 — как раньше).
+        """
         super().__init__()
         self.ch = 16  # DFL channels
         self.nc = nc  # number of classes
+        self.n_leads = n_leads
         self.nl = len(filters)  # number of detection layers
-        self.no = nc + self.ch * 2  # number of outputs per anchor
+        self.no = nc + self.ch * 2  # number of outputs per anchor (per lead)
         self.stride = torch.zeros(self.nl)  # strides computed during build
         self.validate = False
 
-        box = max(64, filters[0] // 4)
-        cls = max(80, filters[0], self.nc)
+        box = int(round(max(64, filters[0] // 4) * width_mult))
+        cls = int(round(max(80, filters[0], self.nc) * width_mult))
 
         self.dfl = DFL(self.ch)
         self.box = torch.nn.ModuleList(torch.nn.Sequential(Conv(x, box,torch.nn.SiLU(), k=3, p=1),
                                                            Conv(box, box,torch.nn.SiLU(), k=3, p=1),
-                                                           torch.nn.Conv1d(box, out_channels=2 * self.ch,
+                                                           torch.nn.Conv1d(box, out_channels=2 * self.ch * n_leads,
                                                                            kernel_size=1)) for x in filters)
         self.cls = torch.nn.ModuleList(torch.nn.Sequential(Conv(x, x, torch.nn.SiLU(), k=3, p=1, g=x),
                                                            Conv(x, cls, torch.nn.SiLU()),
                                                            Conv(cls, cls, torch.nn.SiLU(), k=3, p=1, g=cls),
                                                            Conv(cls, cls, torch.nn.SiLU()),
-                                                           torch.nn.Conv1d(cls, out_channels=self.nc,
+                                                           torch.nn.Conv1d(cls, out_channels=self.nc * n_leads,
                                                                            kernel_size=1)) for x in filters)
 
     def forward(self, x):
         for i, (box, cls) in enumerate(zip(self.box, self.cls)):
-            x[i] = torch.cat(tensors=(box(x[i]), cls(x[i])), dim=1)
+            b, c = box(x[i]), cls(x[i])
+            n, _, a = b.shape
+            # (B, L·2ch, A), (B, L·nc, A) -> (B·L, 2ch + nc, A); при L = 1 — то же, что cat по каналам
+            x[i] = torch.cat(tensors=(b.view(n, self.n_leads, 2 * self.ch, a),
+                                      c.view(n, self.n_leads, self.nc, a)), dim=2).view(n * self.n_leads, self.no, a)
         if self.training:
             return x
 
@@ -361,15 +375,16 @@ class Head(torch.nn.Module):
             box[-1].bias.data[:] = 1.0
             if mode == "legacy":
                 # cls (.01 objects, 80 classes, 640 image)
-                cls[-1].bias.data[:self.nc] = math.log(5 / self.nc / (self.input_length / s) ** 2)
+                cls[-1].bias.data[:] = math.log(5 / self.nc / (self.input_length / s) ** 2)
             else:
-                cls[-1].bias.data[:self.nc] = math.log(expected_objects / self.nc / num_anchors)
+                # одинаково для каждого из n_leads наборов (априорная вероятность на якорь отведения)
+                cls[-1].bias.data[:] = math.log(expected_objects / self.nc / num_anchors)
 
 
 class YOLO(torch.nn.Module):
     def __init__(self, width=None, depth=None, csp=None, num_classes=3, input_channels=15,
                  input_length: int = INPUT_LENGTH, strides=None, bias_init: str = "legacy",
-                 expected_objects: float = 24.0):
+                 expected_objects: float = 24.0, n_leads: int = 1, head_width_mult: float = 1.0):
         """
             input_channels
                 Число каналов входного сигнала (30 — вихретоковые данные, 1 — ЭКГ по отведениям).
@@ -381,10 +396,14 @@ class YOLO(torch.nn.Module):
                 или список из 8 шагов. По умолчанию — исходная сеть {32, 128, 256}.
             bias_init, expected_objects
                 Инициализация смещений классификации (см. Head.initialize_biases).
+            n_leads, head_width_mult
+                Режим MC (M7): число наборов предсказаний головы (по отведению) и ширина её веток (см. Head).
+                Выход — «батч отведений» (B·n_leads, ...).
         """
         super().__init__()
         self.input_channels = input_channels
         self.input_length = input_length
+        self.n_leads = n_leads
         s1, s2, s3 = head_strides(strides)
         if input_length % s3:
             raise ValueError(f"длина входа {input_length} должна делиться на максимальный страйд {s3}")
@@ -393,7 +412,7 @@ class YOLO(torch.nn.Module):
         
         # calculate biases
         img_dummy = torch.zeros(1, input_channels, input_length)
-        self.head = Head(num_classes, (width[7], width[7], width[7]))
+        self.head = Head(num_classes, (width[7], width[7], width[7]), n_leads=n_leads, width_mult=head_width_mult)
         self.head.input_length = input_length
         self.head.stride = torch.tensor([input_length / x.shape[-1] for x in self.forward(img_dummy)])
         self.stride = self.head.stride
@@ -454,7 +473,7 @@ def get_model(size: str, num_classes: int, input_channels: int = 30, input_lengt
     """
         Создаёт модель размера size ("nano", "small", "medium", "large", "xlarge").
         По умолчанию — конфигурация для вихретоковых данных (30 каналов, вход 49152).
-        arch — strides, bias_init, expected_objects (см. YOLO).
+        arch — strides, bias_init, expected_objects, n_leads, head_width_mult (см. YOLO).
     """
     if size == "nano":
         return yolo_v11_n(num_classes, input_channels, input_length, **arch)

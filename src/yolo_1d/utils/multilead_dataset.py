@@ -32,7 +32,8 @@ class MultiLeadDataset(Dataset):
     n_leads = N_LEADS
 
     def __init__(self, filename, transform, type, edge_mask=None, **augmentations):
-        unsupported = {k: v for k, v in augmentations.items() if v}
+        # вероятности склейки/мозаики/mix-up (параметры вроде mix_up_alpha не важны, пока mix_up_prob = 0)
+        unsupported = {k: v for k, v in augmentations.items() if k.endswith("_prob") and v}
         if unsupported:
             raise NotImplementedError(f"в режиме MC пока не поддерживаются: {sorted(unsupported)} (задача A3)")
         super().__init__(filename, transform, type, edge_mask=edge_mask)
@@ -108,6 +109,12 @@ class MultiLeadDataset(Dataset):
         return torch.stack(samples, dim=0), targets
 
     # ------------------------------------------------------------------ для метрик
+    def lead_ids(self) -> List[str]:
+        """ID пригодных отведений `<запись>_<отведение>` в порядке строк выхода модели при последовательном
+        проходе датасета (запись за записью, отведения 0..11, непригодные пропущены) — как ID режима S."""
+        from yolo_1d.utils.ludb import LEADS
+        return [f"{self.sample_id(i)}_{LEADS[k]}" for i in range(self.n) for k in range(N_LEADS) if self.valid(i)[k]]
+
     def lead_labels(self, i: int, k: int) -> numpy.ndarray:
         """Разметка отведения k записи i в формате режима S (m, 3) [class, center, width]."""
         label = self.labels[self.filenames[i]]
@@ -119,8 +126,3 @@ def dataset_class(filename) -> type:
     with open(filename, encoding="utf-8") as f:
         mode = (yaml.safe_load(f) or {}).get("mode", "single_lead")
     return MultiLeadDataset if mode == "multi_lead" else Dataset
-
-
-def lead_names() -> List[str]:
-    from yolo_1d.utils.ludb import LEADS
-    return list(LEADS)

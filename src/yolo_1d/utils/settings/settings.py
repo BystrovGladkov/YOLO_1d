@@ -113,6 +113,13 @@ class TrainingSettings(BaseModel):
         "legacy", description="Initialization of classification biases: 'legacy' (original 2D formula) "
                               "or '1d' (prior = expected_objects / classes / anchors).")
     expected_objects: float = Field(24.0, gt=0.0, description="Expected number of objects per input (for bias_init='1d').")
+    # режим MC (M7, docs/research/R5_multilead.md): 12 отведений на вход, по набору предсказаний на отведение
+    n_leads: int = Field(1, ge=1, description="Number of per-lead prediction sets of the head (1 — one set as before; "
+                                              "12 — ECG mode MC: dataset with `mode: multi_lead`).")
+    head_width_mult: float = Field(1.0, gt=0.0, description="Multiplier of hidden widths of head branches (1 — as before).")
+    lead_loss_norm: Literal["joint", "per_lead"] = Field(
+        "joint", description="MC loss: 'joint' — per-lead losses summed and normalized by the target score sum of the "
+                             "whole batch (scale as in single-lead mode); 'per_lead' — each lead normalized separately, then summed.")
 
     # training settings
     enable_amp: bool = Field(False, description="Enable AMP (automatic mixed precision).")
