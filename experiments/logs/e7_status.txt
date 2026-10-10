@@ -1,0 +1,3 @@
+51481d4 E6: смоук и настройка режима MC; конфиги E7 (mc_baseline, mc_full)
+mc_baseline exit=0 14:16:34
+mc_full exit=0 16:20:38

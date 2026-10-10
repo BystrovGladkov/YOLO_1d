@@ -1,0 +1,20 @@
+{
+  "fold0_seed0": {
+    "train": {
+      "F1_mean6": 0.9980152521826177,
+      "sd_mean6_ms": 13.748647563319407,
+      "mae_mean6_ms": 8.910505075576864,
+      "cse_fraction": 0.6,
+      "n_defined": 6,
+      "n_leads": 1713
+    },
+    "test": {
+      "F1_mean6": 0.9883198281850873,
+      "sd_mean6_ms": 15.728841970725,
+      "mae_mean6_ms": 10.65508420365361,
+      "cse_fraction": 0.4,
+      "n_defined": 6,
+      "n_leads": 477
+    }
+  }
+}

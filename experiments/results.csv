@@ -27,3 +27,5 @@ date,name,git_hash,git_dirty,folds,seeds,F1_mean6_pooled,sd_mean6_ms_pooled,F1_m
 2026-10-10T12:21:55,e6_bs4_lr01,d599821203,True,0,0,0.9912,15.95,0.9912,0.0000,experiments/configs/e6_bs4_lr01.yaml
 2026-10-10T12:30:07,e6_small,d599821203,True,0,0,0.9886,16.08,0.9886,0.0000,experiments/configs/e6_small.yaml
 2026-10-10T12:39:08,e6_head2,d599821203,True,0,0,0.9902,16.72,0.9902,0.0000,experiments/configs/e6_head2.yaml
+2026-10-10T12:46:38,mc_baseline,51481d4d05,False,0 1 2 3 4,0 1,0.9881,17.03,0.9873,0.0018,experiments/configs/mc_baseline.yaml
+2026-10-10T14:16:38,mc_full,51481d4d05,True,0 1 2 3 4,2 3,0.9896,16.79,0.9890,0.0022,experiments/configs/mc_full.yaml

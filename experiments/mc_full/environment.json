@@ -1,0 +1,12 @@
+{
+  "date": "2026-10-10T14:16:38",
+  "command": "run_experiment.py experiments/configs/mc_full.yaml",
+  "git_hash": "51481d4d05f44e8cb390dc2714d5d9127d3c1b4e",
+  "git_branch": "EKG",
+  "git_dirty": true,
+  "python": "3.11.9",
+  "torch": "2.7.1+cu128",
+  "cuda": "12.8",
+  "gpu": "NVIDIA GeForce RTX 5060 Ti",
+  "platform": "Windows-10-10.0.19045-SP0"
+}

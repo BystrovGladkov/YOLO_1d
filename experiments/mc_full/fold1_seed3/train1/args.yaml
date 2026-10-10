@@ -1,0 +1,124 @@
+augmentations:
+  adversarial: 0.0
+  channel_masking: 0.0
+  channel_scaling: 0.0
+  ecg:
+    amp_scale_p: 0.5
+    amp_scale_sigma: 0.2
+    emg_p: 0.3
+    emg_snr:
+    - 10
+    - 25
+    filter_p: 0.3
+    hrv_tp:
+    - 0.6
+    - 1.5
+    hrv_warp_p: 0.5
+    invert_p: 0.0
+    mosaic_p: 0.2
+    nstdb_p: 0.3
+    nstdb_root: data/raw/nstdb
+    nstdb_snr:
+    - 6
+    - 24
+    powerline_p: 0.3
+    powerline_snr:
+    - 15
+    - 35
+    splice_p: 0.3
+    step_amp: 1.0
+    step_p: 0.2
+    time_mask_max: 0.1
+    time_mask_p: 0.2
+    time_scale:
+    - 0.85
+    - 1.15
+    time_scale_p: 0.5
+    wander_amp: 0.5
+    wander_freq:
+    - 0.05
+    - 0.5
+    wander_p: 0.5
+    wave_scale_p: 0.3
+    wave_scale_sigma_pt: 0.3
+    white_p: 0.3
+    white_snr:
+    - 20
+    - 35
+    window_warp_p: 0.3
+    window_warp_scale:
+    - 0.7
+    - 1.4
+  edge_margin_end:
+  - 0
+  - 24
+  edge_margin_eval:
+  - 6
+  - 12
+  edge_margin_start:
+  - 0
+  - 12
+  input_length: 5120
+  leads:
+    amp_lead_sigma: 0.1
+    dropout_labels: ignore
+    dropout_lead_p: 0.15
+    dropout_max: 4
+    dropout_p: 0.5
+    electrode_swap_p: 0.2
+    shuffle_n:
+    - 2
+    - 4
+    shuffle_p: 0.1
+  mark_scaling: 300
+  mix_up: 0.0
+  mix_up_alpha: 20.0
+  mosaic: 0.0
+  phase_spectrum_noise: 0.0
+  pipeline: ecg_multi
+  random_invert: 0.0
+  random_jitter: 0.0
+  random_resize: 0.0
+  random_reverse: 0.0
+  regular_length: 5000
+  square_noises: 0.0
+  time_masking: 0.0
+  validation_resize: false
+backbone_strides: B
+batch_size: 8
+best_metric: F1_mean6
+bias_init: 1d
+dataset: E:\git\YOLO_EKG\data\splits\fold_1_mc.yaml
+delineation_conf: 0.25
+delineation_metrics: true
+early_stopping_epochs: 120
+ema_decay: 0.999
+ema_tau: 200.0
+enable_amp: false
+epochs: 750
+exclude_boundary_points: true
+expected_objects: 24.0
+head_width_mult: 1.0
+input_channels: 12
+lead_loss_norm: joint
+max_lr: 0.01
+min_lr: 0.0001
+model_size: nano
+momentum: 0.937
+n_leads: 12
+names:
+- P
+- QRS
+- T
+nms_iou: 0.2
+num_workers: 4
+project: train
+results_path: E:\git\YOLO_EKG\experiments\mc_full\fold1_seed3
+resume: false
+seed: 3
+starting_checkpoint: null
+warmup_epochs: 9.0
+weight_box: 7.5
+weight_cls: 0.5
+weight_decay: 0.00075
+weight_dfl: 1.5
