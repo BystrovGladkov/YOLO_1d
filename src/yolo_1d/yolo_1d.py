@@ -23,7 +23,7 @@ from yolo_1d.utils.dataset import Dataset
 from yolo_1d.utils.multilead_dataset import MultiLeadDataset, dataset_class
 from yolo_1d.utils.delineation import (DelineationMetrics, apply_thresholds, best_class_thresholds,
                                        boxes_to_intervals, detections_to_intervals, format_table)
-from yolo_1d.utils.transforms import EdgeMask, build_training_transforms, build_validation_transform
+from yolo_1d.utils.transforms import EdgeMask, build_lead_transforms, build_training_transforms, build_validation_transform
 from yolo_1d.utils.settings import TrainingSettings, get_default_settings, save_settings, read_settings
 from yolo_1d.utils.constants import *
 
@@ -134,13 +134,19 @@ class Trainer:
         if (dataset_cls is MultiLeadDataset) != (self._n_leads > 1) or                 (dataset_cls is MultiLeadDataset and self._n_leads != MultiLeadDataset.n_leads):
             raise ValueError(f"датасет {self._settings.dataset} ({dataset_cls.__name__}) не согласован с n_leads = "
                              f"{self._n_leads}: для режима MC нужны n_leads = 12 и yaml с `mode: multi_lead`")
+        multi = dataset_cls is MultiLeadDataset
+        if (aug.pipeline == "ecg" and multi) or (aug.pipeline == "ecg_multi" and not multi):
+            raise ValueError(f"pipeline '{aug.pipeline}' не подходит для {dataset_cls.__name__}: "
+                             "режим S — 'ecg', режим MC — 'ecg_multi'")
+        ecg = aug.pipeline in ("ecg", "ecg_multi")
+        extra = {"lead_transform": build_lead_transforms(aug)} if multi and aug.pipeline == "ecg_multi" else {}
         self._train_dataset = dataset_cls(self._settings.dataset, transform=self._train_transform, type="train", 
                                       mosaic_prob=self._settings.augmentations.mosaic,
                                       mix_up_prob=self._settings.augmentations.mix_up,
                                       mix_up_alpha=self._settings.augmentations.mix_up_alpha,
                                       edge_mask=train_mask,
-                                      splice_prob=aug.ecg.mosaic_p if aug.pipeline == "ecg" else 0,
-                                      beat_splice_prob=aug.ecg.splice_p if aug.pipeline == "ecg" else 0)
+                                      splice_prob=aug.ecg.mosaic_p if ecg else 0,
+                                      beat_splice_prob=aug.ecg.splice_p if ecg else 0, **extra)
         self._val_dataset = dataset_cls(self._settings.dataset, transform=self._test_transform, type="val",
                                         edge_mask=eval_mask)
         self._test_dataset = dataset_cls(self._settings.dataset, transform=self._test_transform, type="test",

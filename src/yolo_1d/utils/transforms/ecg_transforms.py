@@ -303,29 +303,37 @@ class HRVWarp(RandomAug):
         left, right = boxes_to_edges(bboxes, length)
         cls = labels.detach().cpu().numpy().reshape(-1).astype(int)
         order = np.argsort(left)
-        left, right, cls = left[order], right[order], cls[order]
-        k_tp = random.uniform(*self.tp)
-        src, scale = [0.0], []
-        # узлы: 0, l1, r1, l2, r2, ..., L; масштаб каждого интервала между узлами
-        prev_end, prev_cls = 0.0, None
-        for l, r, c in zip(left, right, cls):
-            l, r = max(l, prev_end), max(r, max(l, prev_end))
-            if prev_cls is None:
-                gap_k = 1.0
-            elif prev_cls == T_CLASS:
-                gap_k = k_tp * random.uniform(0.95, 1.05)
-            else:
-                gap_k = random.uniform(*self.segment)
-            src += [l, r]
-            scale += [gap_k, random.uniform(*self.wave)]
-            prev_end, prev_cls = r, c
-        src.append(float(length))
-        scale.append(1.0)
-        src = np.asarray(src)
-        dst = np.concatenate([[0.0], np.cumsum(np.diff(src) * np.asarray(scale))])
+        src, dst = hrv_knots(left[order], right[order], cls[order], length, self.tp, self.segment, self.wave)
         index = torch.as_tensor(order)
         signals, new_boxes = warp(signals, bboxes[index], src, dst)
         return signals, new_boxes, labels[index]
+
+
+def hrv_knots(left: np.ndarray, right: np.ndarray, cls: np.ndarray, length: int, tp: Sequence[float],
+              segment: Sequence[float], wave: Sequence[float]) -> Tuple[np.ndarray, np.ndarray]:
+    """Узлы отображения времени HRV-варпа (T2) по волнам, упорядоченным по левому краю.
+
+    Узлы: 0, l1, r1, l2, r2, ..., L; промежуток после T — общий k_tp ∈ tp (±5 %), остальные промежутки —
+    k ∈ segment, волны — k ∈ wave, края до первой и после последней волны — 1.
+    """
+    k_tp = random.uniform(*tp)
+    src, scale = [0.0], []
+    prev_end, prev_cls = 0.0, None
+    for l, r, c in zip(left, right, cls):
+        l, r = max(l, prev_end), max(r, max(l, prev_end))
+        if prev_cls is None:
+            gap_k = 1.0
+        elif prev_cls == T_CLASS:
+            gap_k = k_tp * random.uniform(0.95, 1.05)
+        else:
+            gap_k = random.uniform(*segment)
+        src += [l, r]
+        scale += [gap_k, random.uniform(*wave)]
+        prev_end, prev_cls = r, c
+    src.append(float(length))
+    scale.append(1.0)
+    src = np.asarray(src)
+    return src, np.concatenate([[0.0], np.cumsum(np.diff(src) * np.asarray(scale))])
 
 
 class WindowWarp(RandomAug):

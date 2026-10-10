@@ -44,6 +44,20 @@ class ECGAugmentationSettings(BaseModel):
     splice_p: float = Field(0.0, ge=0, le=1, description="X2 beat splice of two records at TP gaps with isoline alignment.")
 
 
+class LeadAugmentationSettings(BaseModel):
+    """Аугментации отведений режима MC (A3, группа L; docs/research/R5_multilead.md §3.3); работают при
+    `pipeline: ecg_multi`. Вероятность 0 выключает аугментацию."""
+    dropout_p: float = Field(0.0, ge=0, le=1, description="L1 lead dropout: probability per sample.")
+    dropout_lead_p: float = Field(0.15, ge=0, le=1, description="L1: probability to zero each lead.")
+    dropout_max: int = Field(4, ge=1, le=12, description="L1: max zeroed leads.")
+    dropout_labels: Literal["ignore", "keep"] = Field(
+        "ignore", description="L1: 'ignore' — zeroed leads excluded from loss; 'keep' — their labels are kept.")
+    shuffle_p: float = Field(0.0, ge=0, le=1, description="L2 lead shuffling probability.")
+    shuffle_n: List[int] = Field([2, 4], min_length=2, max_length=2, description="L2: number of permuted leads.")
+    electrode_swap_p: float = Field(0.0, ge=0, le=1, description="L3 limb electrode swap (LA-RA, LA-LL, RA-LL) probability.")
+    amp_lead_sigma: float = Field(0.1, ge=0, description="A1/A2 in MC: lognormal sigma of per-lead factor.")
+
+
 class AugmentationSettings(BaseModel):
     # Значения по умолчанию — вихретоковые данные (сигнал 50000 → вход 49152 через ресайз).
     # ЭКГ (LUDB): regular_length=5000, input_length=5120, validation_resize=False — только паддинг.
@@ -75,9 +89,11 @@ class AugmentationSettings(BaseModel):
     channel_masking: float = Field(0.1, ge=0.0, le=1.0, description="Probability of channel masking.")
 
     # набор аугментаций обучения: "eddy" — исходный (вихретоковые данные, поля выше),
-    # "ecg" — ЭКГ-аугментации из `ecg` (A1); значения по умолчанию сохраняют прежнее поведение
-    pipeline: Literal["eddy", "ecg"] = Field("eddy", description="Training augmentation pipeline.")
+    # "ecg" — ЭКГ-аугментации из `ecg` (A1, режим S); "ecg_multi" — те же вероятности `ecg` в многоканальном
+    # варианте + группа L из `leads` (A3, режим MC); значения по умолчанию сохраняют прежнее поведение
+    pipeline: Literal["eddy", "ecg", "ecg_multi"] = Field("eddy", description="Training augmentation pipeline.")
     ecg: ECGAugmentationSettings = Field(default_factory=ECGAugmentationSettings)
+    leads: LeadAugmentationSettings = Field(default_factory=LeadAugmentationSettings)
 
     # настройки для mixup / mosaic / adversarial
     mosaic: float = Field(0.0, ge=0.0, le=1.0, description="Probability of mosaic augmentation.")

@@ -145,6 +145,7 @@ def test_getitem_and_collate():
     assert targets["idx"].tolist() == sum(([float(i)] * len(b[1]) for i, b in enumerate(batch)), [])
 
 
-def test_augmentations_not_supported_yet(tmp_path):
-    with pytest.raises(NotImplementedError):
-        MultiLeadDataset(str(tmp_path / "x.yaml"), Identity(), "train", splice_prob=0.3)
+def test_mosaic_and_mixup_not_supported(tmp_path):
+    for kw in ({"mosaic_prob": 0.2}, {"mix_up_prob": 0.1}):
+        with pytest.raises(NotImplementedError):
+            MultiLeadDataset(str(tmp_path / "x.yaml"), Identity(), "train", **kw)

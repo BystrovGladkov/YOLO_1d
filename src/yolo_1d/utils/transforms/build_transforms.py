@@ -6,6 +6,9 @@ from .square_noises import SquareNoises
 from .ecg_transforms import (AmplitudeScale, BaselineStep, BaselineWander, EMGBursts, FitToLength, HRVWarp,
                              Invert, NSTDBNoise, PowerlineNoise, RandomFilter, TimeMask, TimeScale, WaveScale,
                              WhiteNoise, WindowWarp)
+from .ecg_multilead_transforms import (CoupledNoise, ElectrodeSwap, KeepZeros, LeadBaselineStep, LeadCompose,
+                                       LeadDropout, LeadShuffle, MultiLeadAmplitudeScale, MultiLeadHRVWarp,
+                                       MultiLeadWaveScale)
 
 def build_ecg_training_transforms(settings: AugmentationSettings):
     """Аугментации обучения для ЭКГ (A1). Порядок — docs/research/R3_augmentations.md §4.1:
@@ -34,9 +37,52 @@ def build_ecg_training_transforms(settings: AugmentationSettings):
     return Compose(ops)
 
 
+def build_ecg_multilead_training_transforms(settings: AugmentationSettings):
+    """Аугментации обучения режима MC (A3, docs/research/R5_multilead.md §3.2): вероятности из `settings.ecg`,
+    порядок как в A1. Время, маска и фильтр — общие для отведений; N1/N2/N5 — общий источник с коэффициентом
+    по отведению; N3/N4 — поканально; N6 — в 1–3 отведениях; A1/A2 — общий × поканальный множитель;
+    A3 (инверсия) не используется. Шумы и фильтр обёрнуты в KeepZeros (маска краёв каждого отведения).
+    Группа L (отведения) и склейка X1/X2 — в MultiLeadDataset (`build_lead_transforms`)."""
+    e, sl = settings.ecg, settings.leads.amp_lead_sigma
+    noise = [
+        CoupledNoise(e.wander_p, "wander", max_amp=e.wander_amp, freq=e.wander_freq),
+        LeadBaselineStep(e.step_p, max_amp=e.step_amp),
+        CoupledNoise(e.nstdb_p, "nstdb", snr=e.nstdb_snr, nstdb_root=e.nstdb_root),
+        EMGBursts(e.emg_p, snr=e.emg_snr),
+        CoupledNoise(e.powerline_p, "powerline", snr=e.powerline_snr),
+        WhiteNoise(e.white_p, snr=e.white_snr),
+        RandomFilter(e.filter_p),
+    ]
+    ops = [
+        MultiLeadHRVWarp(e.hrv_warp_p, tp=e.hrv_tp),
+        WindowWarp(e.window_warp_p, scale=e.window_warp_scale),
+        TimeScale(e.time_scale_p, scale=e.time_scale),
+        MultiLeadWaveScale(e.wave_scale_p, sigma_pt=e.wave_scale_sigma_pt, sigma_lead=sl),
+        MultiLeadAmplitudeScale(e.amp_scale_p, sigma=e.amp_scale_sigma, sigma_lead=sl),
+        *[KeepZeros(op) for op in noise],
+        TimeMask(e.time_mask_p, max_fraction=e.time_mask_max),
+    ]
+    ops = [op for op in ops if op.p > 0]
+    ops.append(FitToLength(settings.input_length, random_shift=True))
+    return Compose(ops)
+
+
+def build_lead_transforms(settings: AugmentationSettings):
+    """Группа L режима MC (A3): L1 lead dropout, L2 lead shuffling, L3 перестановка электродов
+    (порядок: перестановки, затем обнуление). None — если все выключены."""
+    l = settings.leads
+    ops = [op for op in (ElectrodeSwap(l.electrode_swap_p),
+                         LeadShuffle(l.shuffle_p, n_leads=l.shuffle_n),
+                         LeadDropout(l.dropout_p, p_lead=l.dropout_lead_p, max_leads=l.dropout_max,
+                                     labels_mode=l.dropout_labels)) if op.p > 0]
+    return LeadCompose(ops) if ops else None
+
+
 def build_training_transforms(settings: AugmentationSettings):
     if settings.pipeline == "ecg":
         return build_ecg_training_transforms(settings)
+    if settings.pipeline == "ecg_multi":
+        return build_ecg_multilead_training_transforms(settings)
     ops = [
         # MarkScaling(settings.mark_scaling),
         RandomResize(settings.random_resize),
