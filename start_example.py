@@ -27,8 +27,8 @@ def main():
             "random_reverse": 0.5, # geometric 
             "random_invert": 0.5, # amplitude
             "channel_scaling": 0.2, # amplitude
-            "time_masking": 0, # occlision
-            "channel_masking": 0, # occlision
+            "time_masking": 0.2, # occlision
+            "channel_masking": 0.2, # occlision
             "phase_spectrum_noise": 0.5, # spectrun and noise
             "random_jitter": 0.6, # spectrun and noise
             "mosaic": 0.5, # composite
