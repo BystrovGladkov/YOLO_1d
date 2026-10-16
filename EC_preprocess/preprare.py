@@ -38,4 +38,5 @@ def prepare_signal(data:np.ndarray) -> Signal:
     signal = Signal(data)
     signal.sigma_plus = np.array([min(abs(item1.thplus)/3,abs(item2.thplus)/3) for item1,item2 in zip(_CorrectedThreshold2,_Threshold2)])
     signal.sigma_mins = np.array([min(abs(item1.thmins)/3,abs(item2.thmins)/3) for item1,item2 in zip(_CorrectedThreshold2,_Threshold2)])
+    signal.sigma = np.array(min(abs(item1.thplus), abs(item1.thmins)) for item1 in _Threshold1) / 3
     return signal
