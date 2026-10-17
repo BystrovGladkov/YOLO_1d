@@ -1,5 +1,9 @@
 from typing import List, Literal, Optional, Union
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+# каналы входа сети для каждого режима TrainingSettings.input_subset (абляция входа E6, TASKS.md D8)
+SUBSET_CHANNELS = {"all": 30, "raw": 15, "filtered": 15}
+
 
 class ECGAugmentationSettings(BaseModel):
     """ЭКГ-аугментации (A1, docs/research/R3_augmentations.md §3); работают при `pipeline: ecg`.
@@ -136,6 +140,10 @@ class TrainingSettings(BaseModel):
         "nano", description="Size of model. One from next options: 'nano', 'small', 'medium', 'large'."
     )
     input_channels: int = Field(30, ge=1, description="Number of channels of input signal (30 — eddy-current data, 1 — ECG per lead).")
+    input_subset: Literal["all", "raw", "filtered"] = Field(
+        "all", description="ECRv1: channels fed to the network after preprocessing step 11 — 'all' (30: raw + "
+                           "interference-suppressed), 'raw' ([0:15]) or 'filtered' ([15:30]); input_channels is set "
+                           "automatically (30 / 15 / 15).")
     backbone_strides: Union[Literal["original", "A", "B", "C"], List[int]] = Field(
         "original", description="Strides of 8 downsampling convolutions of backbone: template name "
                                 "('original' — heads {32,128,256}; ECG: 'A' — {4,16,32}, 'B' — {8,16,32}, "
@@ -194,6 +202,21 @@ class TrainingSettings(BaseModel):
 
     # augmentations settings
     augmentations: AugmentationSettings = Field(default_factory=AugmentationSettings)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _subset_channels(cls, data):
+        """`input_subset` raw/filtered без явного `input_channels` → 15 каналов."""
+        if isinstance(data, dict) and data.get("input_subset", "all") != "all" and "input_channels" not in data:
+            data = {**data, "input_channels": SUBSET_CHANNELS[data["input_subset"]]}
+        return data
+
+    @model_validator(mode="after")
+    def _check_subset_channels(self):
+        if self.input_subset != "all" and self.input_channels != SUBSET_CHANNELS[self.input_subset]:
+            raise ValueError(f"input_subset={self.input_subset!r} требует input_channels=15, "
+                             f"задано {self.input_channels}")
+        return self
 
     class Config:
         str_strip_whitespace = True

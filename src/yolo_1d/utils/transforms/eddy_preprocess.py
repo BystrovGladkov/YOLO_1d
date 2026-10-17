@@ -181,6 +181,22 @@ class ThresholdNormalize(Module):
         return _to_tensor(out), bboxes, labels
 
 
+class SelectChannels(Module):
+    """Срез каналов после шага 11 (абляция входа E6): 'all' — все 30, 'raw' — [0:15], 'filtered' — [15:30]."""
+
+    SLICES = {"all": slice(0, 2 * N_CHANNELS), "raw": slice(0, N_CHANNELS), "filtered": slice(N_CHANNELS, 2 * N_CHANNELS)}
+
+    def __init__(self, subset: str):
+        super().__init__()
+        if subset not in self.SLICES:
+            raise ValueError(f"SelectChannels: неизвестный режим {subset!r}, есть {sorted(self.SLICES)}")
+        self.subset = subset
+
+    def forward(self, signals, bboxes, labels):
+        _check_channels(signals, 2 * N_CHANNELS, "SelectChannels")
+        return signals[self.SLICES[self.subset]].contiguous(), bboxes, labels
+
+
 class PreprocessedCache(Module):
     """Шаги предобработки целиком (val/test, без аугментаций) с дисковым кэшем результата.
 

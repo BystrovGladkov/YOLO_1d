@@ -200,8 +200,8 @@ class Trainer:
             Creates transforms for dataLoaders.
         """
         # ECRv1 (`format: ecr_npy` в yaml) — предобработка на лету в трансформах; остальные датасеты — как раньше
-        self._train_transform, self._test_transform = build_transforms_for_dataset(self._settings.augmentations,
-                                                                                   self._settings.dataset)
+        self._train_transform, self._test_transform = build_transforms_for_dataset(
+            self._settings.augmentations, self._settings.dataset, self._settings.input_subset)
         
     def _load_model_weights(self):
         # paths to resulting files

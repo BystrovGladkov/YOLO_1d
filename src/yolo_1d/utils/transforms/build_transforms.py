@@ -7,7 +7,7 @@ import yaml
 from .transforms import Padding, Resize, RandomResize, RandomCrop, RandomPadding, RandomReverse, RandomJitter, RandomInvert, TimeMasking, ChannelMasking, ChannelScaling, MarkScaling, PhaseSpectrumNoise, RandomApply, SineNoise
 from yolo_1d.utils.settings import AugmentationSettings
 from .square_noises import SquareNoises
-from .eddy_preprocess import EddyPreprocessing
+from .eddy_preprocess import EddyPreprocessing, SelectChannels
 from .ecg_transforms import (AmplitudeScale, BaselineStep, BaselineWander, EMGBursts, FitToLength, HRVWarp,
                              Invert, NSTDBNoise, PowerlineNoise, RandomFilter, TimeMask, TimeScale, WaveScale,
                              WhiteNoise, WindowWarp)
@@ -88,12 +88,14 @@ def _fit_length_ops(settings: AugmentationSettings) -> List:
     return [Padding(settings.regular_length), Resize(settings.input_length)]
 
 
-def build_ecr_training_transforms(settings: AugmentationSettings, pre: EddyPreprocessing):
+def build_ecr_training_transforms(settings: AugmentationSettings, pre: EddyPreprocessing, input_subset: str = "all"):
     """Обучающий конвейер ECRv1: предобработка на лету + аугментации (SPEC п. 3; TASKS.md, таблица шагов 1–13).
 
     Порядок задан пользователем и не меняется; группы включаются только параметрами. Каждая аугментация,
     кроме RandomResize, RandomCrop и RandomPadding, применяется с вероятностью `augment_apply_p`, умноженной на
     её собственную вероятность (`sine_noise`, `square_noises`). Вход — сырой сигнал (15, L), выход — (30, input_length).
+    `input_subset` ("raw" / "filtered", абляция входа E6) — после шага 11 остаются 15 каналов (`SelectChannels`),
+    шаги 12–13 работают с ними.
     """
     if settings.mosaic > 0 and not settings.random_crop:
         raise ValueError("mosaic склеивает сигналы длиннее regular_length: нужен random_crop=True")
@@ -135,6 +137,8 @@ def build_ecr_training_transforms(settings: AugmentationSettings, pre: EddyPrepr
         ops.append(maybe(TimeMasking(settings.time_masking)))
     # 11: новые пороговые уровни, замена битых каналов по карте шага 1, нормировка обеих половин
     ops.append(pre.normalize)
+    if input_subset != "all":
+        ops.append(SelectChannels(input_subset))
     # 12: амплитуды и маскирование каналов
     if settings.channel_scaling > 0:
         ops.append(maybe(ChannelScaling(settings.channel_scaling)))
@@ -145,7 +149,8 @@ def build_ecr_training_transforms(settings: AugmentationSettings, pre: EddyPrepr
     return Compose(ops)
 
 
-def build_training_transforms(settings: AugmentationSettings, preprocessing: Optional[EddyPreprocessing] = None):
+def build_training_transforms(settings: AugmentationSettings, preprocessing: Optional[EddyPreprocessing] = None,
+                              input_subset: str = "all"):
     """Обучающий трансформ. `preprocessing` задан — конвейер ECRv1 с предобработкой на лету
     (`build_ecr_training_transforms`); иначе — по `settings.pipeline` (ЭКГ или прежний вихретоковый для .pt)."""
     if settings.pipeline == "ecg":
@@ -153,7 +158,7 @@ def build_training_transforms(settings: AugmentationSettings, preprocessing: Opt
     if settings.pipeline == "ecg_multi":
         return build_ecg_multilead_training_transforms(settings)
     if preprocessing is not None:
-        return build_ecr_training_transforms(settings, preprocessing)
+        return build_ecr_training_transforms(settings, preprocessing, input_subset)
     return _build_eddy_legacy_training_transforms(settings)
 
 
@@ -186,12 +191,15 @@ def _build_eddy_legacy_training_transforms(settings: AugmentationSettings):
     ops.append(RandomPadding(settings.input_length))
     return Compose(ops)
 
-def build_validation_transform(settings: AugmentationSettings, preprocessing: Optional[EddyPreprocessing] = None):
+def build_validation_transform(settings: AugmentationSettings, preprocessing: Optional[EddyPreprocessing] = None,
+                               input_subset: str = "all"):
     """Трансформ val/test. С `preprocessing` (ECRv1): шаги 1–2, 7, 8, 9, 11 (с кэшем полного результата, если
     у `preprocessing` задан `cache_dir`) + паддинг до regular_length и ресайз до input_length."""
     ops = []
     if preprocessing is not None:
-        ops += preprocessing.cached_validation_ops()
+        ops += preprocessing.cached_validation_ops()   # кэш хранит все 30 каналов; срез — после него
+        if input_subset != "all":
+            ops.append(SelectChannels(input_subset))
     if settings.validation_resize:
         # вихретоковые данные: паддинг до regular_length и ресайз до input_length
         ops += _fit_length_ops(settings)
@@ -201,12 +209,12 @@ def build_validation_transform(settings: AugmentationSettings, preprocessing: Op
     return Compose(ops)
 
 
-def build_transforms_for_dataset(settings: AugmentationSettings, dataset: Optional[str]):
+def build_transforms_for_dataset(settings: AugmentationSettings, dataset: Optional[str], input_subset: str = "all"):
     """(train, val/test) трансформы для датасета `dataset` (yaml).
 
     `format: ecr_npy` — предобработка на лету (`pipeline` должен быть "eddy"); кэш — `preprocess_cache` из yaml.
     У train и val/test — разные экземпляры `EddyPreprocessing` (свой контекст), дисковый кэш общий.
-    Остальные форматы — как раньше.
+    Остальные форматы — как раньше. `input_subset` ("raw" / "filtered") — только для ECRv1.
     """
     fmt, cache = None, None
     if dataset is not None:
@@ -214,11 +222,13 @@ def build_transforms_for_dataset(settings: AugmentationSettings, dataset: Option
             data = yaml.safe_load(f) or {}
         fmt, cache = data.get("format"), data.get("preprocess_cache")
     if fmt != "ecr_npy":
+        if input_subset != "all":
+            raise ValueError(f"input_subset={input_subset!r} поддерживается только для датасетов ECRv1 (format: ecr_npy)")
         return build_training_transforms(settings), build_validation_transform(settings)
     if settings.pipeline != "eddy":
         raise ValueError(f"датасет ECRv1 ({dataset}) требует pipeline='eddy', задан {settings.pipeline!r}")
     if not settings.validation_resize:
         raise ValueError("датасет ECRv1 требует validation_resize=True")
-    train = build_training_transforms(settings, EddyPreprocessing(cache_dir=cache))
-    test = build_validation_transform(settings, EddyPreprocessing(cache_dir=cache))
+    train = build_training_transforms(settings, EddyPreprocessing(cache_dir=cache), input_subset)
+    test = build_validation_transform(settings, EddyPreprocessing(cache_dir=cache), input_subset)
     return train, test

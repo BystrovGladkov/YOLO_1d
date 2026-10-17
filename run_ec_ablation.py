@@ -239,14 +239,16 @@ def run_one(config: dict, seed: int, runs_dir: Path = RUNS_DIR, rerun: bool = Fa
 
 # ------------------------------------------------------------------ E5: test + SquareNoises
 
-def noisy_test_transform(settings: AugmentationSettings, cache_dir: Optional[str], noise_seed: int = 0):
+def noisy_test_transform(settings: AugmentationSettings, cache_dir: Optional[str], noise_seed: int = 0,
+                         input_subset: str = "all"):
     """Валидационный конвейер с прямоугольной помехой на шаге 6 (p = 1).
 
     Помеха детерминирована: seed — от содержимого сигнала и `noise_seed` (не зависит от порядка и воркеров).
     Полный результат кэшируется отдельно от чистого test (`<cache>/noisy_test_s<noise_seed>/`).
     """
     from torchvision.transforms.v2 import Compose
-    from yolo_1d.utils.transforms import EddyPreprocessing, PreprocessedCache, ReferenceCache, SquareNoises
+    from yolo_1d.utils.transforms import (EddyPreprocessing, PreprocessedCache, ReferenceCache, SelectChannels,
+                                          SquareNoises)
     from yolo_1d.utils.transforms.transforms import Padding, Resize
 
     class SeededSquareNoises(torch.nn.Module):
@@ -267,6 +269,8 @@ def noisy_test_transform(settings: AugmentationSettings, cache_dir: Optional[str
     ops = [pre.reference, SeededSquareNoises(), pre.ica, pre.destandardize, pre.fourier, pre.normalize]
     if cache_dir:
         ops = [PreprocessedCache(ops, str(Path(cache_dir) / f"noisy_test_s{noise_seed}"))]
+    if input_subset != "all":
+        ops.append(SelectChannels(input_subset))
     return Compose(ops + [Padding(settings.regular_length), Resize(settings.input_length)])
 
 
@@ -281,7 +285,8 @@ def run_noisy_test(config: dict, seed: int, runs_dir: Path = RUNS_DIR, noise_see
     _load_best(trainer)
     cache = yaml.safe_load((REPO / config["dataset"]).read_text(encoding="utf-8")).get("preprocess_cache")
     aug = trainer._settings.augmentations
-    dataset = Dataset(str(REPO / config["dataset"]), noisy_test_transform(aug, cache, noise_seed), "test")
+    transform = noisy_test_transform(aug, cache, noise_seed, trainer._settings.input_subset)
+    dataset = Dataset(str(REPO / config["dataset"]), transform, "test")
     loader = DataLoader(dataset, trainer._settings.batch_size, shuffle=False, collate_fn=Dataset.collate_fn,
                         num_workers=trainer._settings.num_workers)
     with torch.no_grad():

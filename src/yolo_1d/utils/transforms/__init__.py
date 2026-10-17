@@ -4,12 +4,12 @@ from .build_transforms import (build_training_transforms, build_validation_trans
                                build_ecr_training_transforms, build_transforms_for_dataset)
 from .square_noises import SquareNoises
 from .edge_mask import EdgeMask
-from .eddy_preprocess import (EddyContext, EddyPreprocessing, ReferenceCache, PreprocessedCache, ReferenceStandardize, ICASuppression,
+from .eddy_preprocess import (EddyContext, EddyPreprocessing, ReferenceCache, PreprocessedCache, SelectChannels, ReferenceStandardize, ICASuppression,
                               Destandardize, FourierAlign, ThresholdNormalize)
 from . import ecg_transforms, ecg_multilead_transforms
 
 __ALL__ = [
     "Padding", "Resize", "RandomResize", "RandomCrop", "RandomPadding", "RandomReverse", "RandomInvert", "TimeMasking", "ChannelMasking", "ChannelScaling", "MarkScaling", "PhaseSpectrumNoise", "RandomJitter","build_training_transforms", "build_validation_transform", "SquareNoises", "SineNoise", "EdgeMask",
-    "EddyContext", "EddyPreprocessing", "ReferenceCache", "PreprocessedCache", "ReferenceStandardize", "ICASuppression", "Destandardize",
+    "EddyContext", "EddyPreprocessing", "ReferenceCache", "PreprocessedCache", "SelectChannels", "ReferenceStandardize", "ICASuppression", "Destandardize",
     "FourierAlign", "ThresholdNormalize"
 ]
