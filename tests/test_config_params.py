@@ -26,7 +26,9 @@ def test_defaults_keep_eddy_current_configuration():
     s = TrainingSettings(names=["a", "b"])
     assert s.input_channels == 30
     a = s.augmentations
-    assert (a.regular_length, a.input_length, a.validation_resize, a.square_noises) == (50000, 49152, True, 0.1)
+    assert (a.regular_length, a.input_length, a.validation_resize) == (50000, 49152, True)
+    # аугментации помех по умолчанию выключены (абляция ECRv1, TASKS.md D5): включаются только конфигом
+    assert (a.square_noises, a.sine_noise) == (0.0, 0.0)
     model = nn.get_model("nano", 6)
     assert model.input_channels == 30 and model.input_length == 49152
     assert model.stride.tolist() == [32, 128, 256]

@@ -348,6 +348,54 @@ class RandomApply(Module):
             signals, bboxes, labels = self.augmentation(signals, bboxes, labels)
         return signals, bboxes, labels
 
+
+class SineNoise(Module):
+
+    def __init__(self, low: float = 0.002, high: float = 0.03, amplitude: Tuple[float, float] = (0.5, 3.0),
+                 sigma: Tuple[float, float] = (0.05, 0.2), freq_jitter: float = 0.1, knot_step: int = 5000):
+        """
+            Adds a low-frequency sinusoidal interference A(c) * sin(phi(t)) to neighbouring channels.
+
+            Frequency: omega_0 ~ U[`low`, `high`] rad/sample. Frequency and phase drift slowly along the
+            signal: omega(t) = omega_0 * (1 + delta(t)), phi(t) = phi_0 + cumsum(omega(t)), phi_0 ~ U[0, 2*pi);
+            delta(t) is a piecewise-linear random process with knots every `knot_step` samples and values
+            U[-`freq_jitter`, `freq_jitter`], so the instantaneous frequency stays within
+            omega_0 * (1 ± freq_jitter).
+
+            Channel profile: channels are placed at c_k = (k - (C - 1) / 2) / C (for C = 15:
+            -7/15 ... 7/15); m ~ U[-0.5, 0.5], s ~ U[`sigma`]; A(c_k) = a * exp(-(c_k - m)^2 / (2 s^2)) —
+            the normal density normalised to its peak, a ~ U[`amplitude`] (units of the input signal;
+            in the eddy pipeline — standardised signal, step 5 in TASKS.md). A narrow s puts the
+            interference on a few neighbouring channels.
+        """
+        super().__init__()
+        if not 0 < low <= high:
+            raise ValueError(f"SineNoise: expected 0 < low <= high, got low={low}, high={high}")
+        self.low, self.high = low, high
+        self.amplitude = tuple(amplitude)
+        self.sigma = tuple(sigma)
+        self.freq_jitter = freq_jitter
+        self.knot_step = knot_step
+
+    def sample(self, n_channels: int, length: int):
+        """Random parameters of one interference: (profile (C,), omega(t) (L,), phi(t) (L,), omega_0)."""
+        omega0 = np.random.uniform(self.low, self.high)
+        n_knots = max(2, int(np.ceil(length / self.knot_step)) + 1)
+        knots = np.random.uniform(-self.freq_jitter, self.freq_jitter, size=n_knots)
+        delta = np.interp(np.arange(length), np.linspace(0, length - 1, n_knots), knots)
+        omega = omega0 * (1 + delta)
+        phi = np.random.uniform(0, 2 * np.pi) + np.cumsum(omega)
+        coords = (np.arange(n_channels) - (n_channels - 1) / 2) / n_channels
+        m = np.random.uniform(-0.5, 0.5)
+        s = np.random.uniform(*self.sigma)
+        profile = np.random.uniform(*self.amplitude) * np.exp(-(coords - m) ** 2 / (2 * s ** 2))
+        return profile, omega, phi, omega0
+
+    def forward(self, signals: torch.Tensor, bboxes: torch.Tensor, labels: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        profile, _, phi, _ = self.sample(signals.size(0), signals.size(1))
+        noise = torch.from_numpy(profile[:, None] * np.sin(phi)[None, :]).to(signals.dtype)
+        return signals + noise, bboxes, labels
+
 # TODO:
 # mix-up аугментация
 # Импульсный шум, прямоугольный шум

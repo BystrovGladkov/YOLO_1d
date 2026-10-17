@@ -394,40 +394,19 @@ class OnlineRobustSegmenter:
         mad_array.append(self.mad_est)
         return mask, median_array, mad_array
     
-def furie_align(data: torch.Tensor) -> torch.Tensor:
-    length = data.shape[1]
-    
-    freq = 0.03
-    to = math.ceil(freq / 2 / np.pi * length)
-
-    # Прямое вещественное преобразование Фурье по 1-му измерению
-    ff = torch.fft.rfft(data, dim=1)
-    # Обрезание Фурье-коэффициентов для всех каналов
-    ff[:, :to] = 0
-    # Обратное преобразование
-    rez = torch.fft.irfft(ff, n=length, dim=1)
-    return rez
-
 class SquareNoises(Module):
-    
+
     def __init__(self):
         """
-            Adds a square-wave noises in signal and performs it's suppression.
+            Adds a square-wave noise (`new_smooth_noise`, model of real interference) to the signal.
+
+            The same noise is added to every channel (the real interference is common to all channels).
+            Suppression is no longer performed here: it is done by the separate ICA step of the
+            preprocessing pipeline (`eddy_preprocess.ICASuppression`), so input and output shapes match.
+            In the eddy pipeline the input is the standardised 15-channel signal (step 6 in TASKS.md).
         """
         super().__init__()
-        
+
     def forward(self, signals: torch.Tensor, bboxes: torch.Tensor, labels: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        length = signals.size(1)
-        # extract original signal
-        original_signal = signals[:15, :]
-        _, _, noise = new_smooth_noise(length)
-        data_noised = original_signal + torch.from_numpy(noise[None, :])
-        mean, std = torch.mean(original_signal, axis=1, keepdim=True), torch.std(original_signal, axis=1, keepdim=True)
-        
-        data_cleared = ICA_filtration(((data_noised - mean) / std).numpy(), median=True, EMA=True, method='hyvarinen')
-        data_cleared = furie_align(torch.from_numpy(data_cleared) * std)
-        
-        result = torch.zeros((signals.size(0), signals.size(1)), dtype=signals.dtype)
-        result[:15,:] = data_noised
-        result[15:,:] = data_cleared
-        return result, bboxes, labels
+        _, _, noise = new_smooth_noise(signals.size(1))
+        return signals + torch.from_numpy(noise[None, :]).to(signals.dtype), bboxes, labels

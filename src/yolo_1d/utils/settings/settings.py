@@ -66,8 +66,17 @@ class AugmentationSettings(BaseModel):
     validation_resize: bool = Field(
         True, description="Validation transform: pad to regular_length and resize to input_length (True, "
                           "eddy-current data) or only pad to input_length without changing time scale (False, ECG).")
-    square_noises: float = Field(0.1, ge=0.0, le=1.0,
-                                 description="Probability of SquareNoises (eddy-current specific, needs 30 channels).")
+    # аугментации помех (вихретоковые данные, TASKS.md D5); по умолчанию выключены, включаются конфигом абляции
+    square_noises: float = Field(0.0, ge=0.0, le=1.0,
+                                 description="Probability of SquareNoises (adds square-wave interference, 15 channels).")
+    sine_noise: float = Field(0.0, ge=0.0, le=1.0, description="Probability of SineNoise (low-frequency sinusoid).")
+    sine_low: float = Field(0.002, gt=0.0, description="SineNoise: lower bound of angular frequency, rad/sample.")
+    sine_high: float = Field(0.03, gt=0.0, description="SineNoise: upper bound of angular frequency, rad/sample.")
+    sine_amplitude: List[float] = Field([0.5, 3.0], min_length=2, max_length=2,
+                                        description="SineNoise: range of peak amplitude (units of standardised signal).")
+    sine_sigma: List[float] = Field([0.05, 0.2], min_length=2, max_length=2,
+                                    description="SineNoise: range of width of the gaussian channel profile.")
+    sine_freq_jitter: float = Field(0.1, ge=0.0, lt=1.0, description="SineNoise: max relative drift of frequency.")
     # Маскирование неразмеченных краёв записи (D5; действует, только если в yaml датасета задан ключ `zones`)
     edge_margin_start: List[int] = Field([0, 12], min_length=2, max_length=2,
                                          description="Train: range (min, max) of mask margin before first onset, samples.")
