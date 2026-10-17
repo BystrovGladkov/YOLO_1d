@@ -124,7 +124,14 @@
   - Тесты: форма и тип, профиль по каналам (максимум ≈ amplitude, спадает к краям), частота в [low, high], детерминизм при фиксированном seed, SquareNoises больше не меняет число каналов.
   Зависит от: —
 
-- [~] **D6** `[DEV]` **Сборка конвейеров: `build_training_transforms` и `build_validation_transform`/test.**
+- [x] **D6** `[DEV]` **Сборка конвейеров: `build_training_transforms` и `build_validation_transform`/test.**
+  **Сделано (2026-10-17):** [build_transforms.py](src/yolo_1d/utils/transforms/build_transforms.py):
+  - `build_ecr_training_transforms(settings, pre)` — шаги 1–13 в порядке таблицы; каждая аугментация, кроме RandomResize/RandomCrop/RandomPadding, — `RandomApply(p = augment_apply_p × собственная вероятность)` (`augment_apply_p = 0.5`; для SineNoise/SquareNoises — 0.5 × `sine_noise`/`square_noises`). `ChannelScaling` теперь получает `sigma = channel_scaling` (прежний конвейер передавал значение по умолчанию 0.4).
+  - Новый флаг `random_crop` (по умолчанию True): RandomCrop (шаг 3) + RandomPadding (шаг 13); False — детерминированно `Padding(regular_length)` + `Resize(input_length)`, как на валидации. `mosaic > 0` при `random_crop=False` — ошибка конфигурации (склейка длиннее regular_length).
+  - `build_validation_transform(settings, preprocessing)` — шаги 1–2, 7, 8, 9, 11 + Padding + Resize; `PreprocessedCache` ([eddy_preprocess.py](src/yolo_1d/utils/transforms/eddy_preprocess.py)) кэширует полный результат в **float16** (≈ 3 МБ/сигнал, ≈ 2.6 ГБ на val+test; выход при включённом кэше всегда округлён до float16 → не зависит от того, заполнен ли кэш).
+  - `build_transforms_for_dataset(settings, dataset)` — по `format` в yaml: `ecr_npy` → конвейер ECRv1 (кэш из `preprocess_cache`, свой `EddyPreprocessing` у train и val/test), иначе — как раньше. `Trainer._prepare_transforms` вызывает её. Прежний вихретоковый конвейер для `.pt` сохранён (`_build_eddy_legacy_training_transforms`), ЭКГ-ветки не тронуты.
+  - Тесты [tests/test_ecr_pipeline.py](tests/test_ecr_pipeline.py) (10): порядок = таблица, вероятности RandomApply, выключение групп, train = val при всех нулях (побитно), выход (30, input_length) для коротких/длинных сигналов, кэш val, выбор конвейера по датасету, `Dataset` + `DataLoader(num_workers=2)` с mosaic и mix-up. Весь набор 205 passed.
+  - Время на реальных фрагментах (CPU, 1 поток): train 0.82 с/пример при пустом кэше, **0.38 с** при заполненном; val 0.42 с при пустом, **0.02 с** при заполненном.
   - `pipeline="eddy"`: реализовать порядок шагов 1–13 по комментариям пользователя (таблица выше) — **порядок не менять**.
   - Каждую аугментацию обернуть в `RandomApply(op, p=0.5)` (SPEC), **кроме RandomResize, RandomCrop, RandomPadding**; шаги предобработки — без обёртки.
   - Выключение групп: при выключенной геометрии длина приводится детерминированно, как на валидации (`Padding(regular_length)` + `Resize(input_length)`), так что baseline и валидация видят одинаковый масштаб; `mosaic`, `mix_up`, `adversarial`, `square_noises`, `sine_noise` по умолчанию 0.
@@ -141,8 +148,8 @@
 
   | ID | Добавляемая группа | Параметры (из `start_example.py`, если не указано) |
   |---|---|---|
-  | A0 | без аугментаций | все 0 |
-  | A1 | + геометрия | `random_resize=0.1`, RandomCrop, RandomPadding, `random_reverse=0.5` |
+  | A0 | без аугментаций | все 0, `random_crop=False` |
+  | A1 | + геометрия | `random_resize=0.1`, `random_crop=True` (RandomCrop + RandomPadding), `random_reverse=0.5` |
   | A2 | + спектральные | `phase_spectrum_noise=0.5` |
   | A3 | + аддитивный шум | `random_jitter=0.6` |
   | A4 | + амплитудные | `random_invert=0.5`, `channel_scaling=0.2` |

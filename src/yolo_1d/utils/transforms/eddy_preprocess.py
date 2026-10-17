@@ -181,6 +181,42 @@ class ThresholdNormalize(Module):
         return _to_tensor(out), bboxes, labels
 
 
+class PreprocessedCache(Module):
+    """Шаги предобработки целиком (val/test, без аугментаций) с дисковым кэшем результата.
+
+    Результат хранится в float16 (`<root>/preprocessed/`, ключ — как у `ReferenceCache`): 30 × 50 000
+    отсчётов ≈ 3 МБ на сигнал (как в прежнем датасете .pt); сеть всё равно работает в AMP. Чтобы выход не
+    зависел от того, был ли кэш заполнен, результат **всегда** округляется до float16 (и при промахе).
+    Сигналы длиннее `max_length` считаются без записи в кэш.
+    """
+
+    def __init__(self, ops: List[Module], root: str, max_length: Optional[int] = 50000):
+        super().__init__()
+        self.ops = list(ops)
+        self.dir = os.path.join(str(root), "preprocessed")
+        self.max_length = max_length
+
+    def _path(self, key: str) -> str:
+        return os.path.join(self.dir, key[:2], key + ".npy")
+
+    def forward(self, signals, bboxes, labels):
+        raw = signals.detach().cpu().numpy().astype(np.float32)
+        path = self._path(ReferenceCache.key(raw))
+        if os.path.exists(path):
+            return torch.from_numpy(np.load(path).astype(np.float32)), bboxes, labels
+        out = signals
+        for op in self.ops:
+            out, bboxes, labels = op(out, bboxes, labels)
+        out16 = out.detach().cpu().numpy().astype(np.float16)
+        if self.max_length is None or raw.shape[-1] <= self.max_length:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp")
+            with os.fdopen(fd, "wb") as f:
+                np.save(f, out16)
+            os.replace(tmp, path)
+        return torch.from_numpy(out16.astype(np.float32)), bboxes, labels
+
+
 class EddyPreprocessing:
     """Набор шагов предобработки с общим контекстом и (необязательным) кэшем опорных статистик.
 
@@ -192,6 +228,8 @@ class EddyPreprocessing:
     """
 
     def __init__(self, cache_dir: Optional[str] = None, cache_max_length: Optional[int] = 50000):
+        self.cache_dir = cache_dir
+        self.cache_max_length = cache_max_length
         self.context = EddyContext()
         cache = ReferenceCache(cache_dir, cache_max_length) if cache_dir else None
         self.reference = ReferenceStandardize(self.context, cache)
@@ -203,3 +241,9 @@ class EddyPreprocessing:
     def validation_ops(self) -> List[Module]:
         """Шаги 1–2, 7, 8, 9, 11 подряд (без аугментаций)."""
         return [self.reference, self.ica, self.destandardize, self.fourier, self.normalize]
+
+    def cached_validation_ops(self) -> List[Module]:
+        """Как `validation_ops`, но с кэшем полного результата (`PreprocessedCache`), если задан `cache_dir`."""
+        if not self.cache_dir:
+            return self.validation_ops()
+        return [PreprocessedCache(self.validation_ops(), self.cache_dir, self.cache_max_length)]

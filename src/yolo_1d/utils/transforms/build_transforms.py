@@ -1,8 +1,13 @@
 from torchvision.transforms.v2 import Compose
 
-from .transforms import Padding, Resize, RandomResize, RandomCrop, RandomPadding, RandomReverse, RandomJitter, RandomInvert, TimeMasking, ChannelMasking, ChannelScaling, MarkScaling, PhaseSpectrumNoise, RandomApply
+from typing import List, Optional
+
+import yaml
+
+from .transforms import Padding, Resize, RandomResize, RandomCrop, RandomPadding, RandomReverse, RandomJitter, RandomInvert, TimeMasking, ChannelMasking, ChannelScaling, MarkScaling, PhaseSpectrumNoise, RandomApply, SineNoise
 from yolo_1d.utils.settings import AugmentationSettings
 from .square_noises import SquareNoises
+from .eddy_preprocess import EddyPreprocessing
 from .ecg_transforms import (AmplitudeScale, BaselineStep, BaselineWander, EMGBursts, FitToLength, HRVWarp,
                              Invert, NSTDBNoise, PowerlineNoise, RandomFilter, TimeMask, TimeScale, WaveScale,
                              WhiteNoise, WindowWarp)
@@ -78,21 +83,90 @@ def build_lead_transforms(settings: AugmentationSettings):
     return LeadCompose(ops) if ops else None
 
 
-def build_training_transforms(settings: AugmentationSettings):
+def _fit_length_ops(settings: AugmentationSettings) -> List:
+    """Детерминированное приведение длины, как на валидации: паддинг до regular_length и ресайз до input_length."""
+    return [Padding(settings.regular_length), Resize(settings.input_length)]
+
+
+def build_ecr_training_transforms(settings: AugmentationSettings, pre: EddyPreprocessing):
+    """Обучающий конвейер ECRv1: предобработка на лету + аугментации (SPEC п. 3; TASKS.md, таблица шагов 1–13).
+
+    Порядок задан пользователем и не меняется; группы включаются только параметрами. Каждая аугментация,
+    кроме RandomResize, RandomCrop и RandomPadding, применяется с вероятностью `augment_apply_p`, умноженной на
+    её собственную вероятность (`sine_noise`, `square_noises`). Вход — сырой сигнал (15, L), выход — (30, input_length).
+    """
+    if settings.mosaic > 0 and not settings.random_crop:
+        raise ValueError("mosaic склеивает сигналы длиннее regular_length: нужен random_crop=True")
+    p = settings.augment_apply_p
+
+    def maybe(op, own=1.0):
+        return RandomApply(op, p=p * own)
+
+    # 1–2: опорные статистики по «выровненной» копии (ICA + Фурье, CorrectedThreshold1) и стандартизация
+    #      «грязного» (невыровненного) сигнала — дальше работаем с ним
+    ops = [pre.reference]
+    # 3: геометрия (без RandomApply)
+    if settings.random_resize > 0:
+        ops.append(RandomResize(settings.random_resize))
+    if settings.random_crop:
+        ops.append(RandomCrop(settings.input_length))
+    # 4: спектральные, аддитивный шум, амплитудные, инверсия по времени
+    if settings.phase_spectrum_noise > 0:
+        ops.append(maybe(PhaseSpectrumNoise(settings.phase_spectrum_noise)))
+    if settings.random_jitter > 0:
+        ops.append(maybe(RandomJitter(settings.random_jitter)))
+    if settings.random_invert > 0:
+        ops.append(maybe(RandomInvert(settings.random_invert)))
+    if settings.random_reverse > 0:
+        ops.append(maybe(RandomReverse(settings.random_reverse)))
+    # 5: низкочастотная синусоида
+    if settings.sine_noise > 0:
+        ops.append(maybe(SineNoise(settings.sine_low, settings.sine_high, settings.sine_amplitude,
+                                   settings.sine_sigma, settings.sine_freq_jitter), settings.sine_noise))
+    # 6: прямоугольная помеха (без встроенного подавления)
+    if settings.square_noises > 0:
+        ops.append(maybe(SquareNoises(), settings.square_noises))
+    # 7: подавление прямоугольных помех ICA (всегда): 15 «грязных» + 15 «чистых» каналов
+    # 8: обратно в единицы АЦП (× σ_опорн + mean)
+    # 9: Фурье-подавление помех в «чистой» половине
+    ops += [pre.ica, pre.destandardize, pre.fourier]
+    # 10: маскирование по времени (до порогов — намеренно: в реальных данных куски тоже бывают пустыми)
+    if settings.time_masking > 0:
+        ops.append(maybe(TimeMasking(settings.time_masking)))
+    # 11: новые пороговые уровни, замена битых каналов по карте шага 1, нормировка обеих половин
+    ops.append(pre.normalize)
+    # 12: амплитуды и маскирование каналов
+    if settings.channel_scaling > 0:
+        ops.append(maybe(ChannelScaling(settings.channel_scaling)))
+    if settings.channel_masking > 0:
+        ops.append(maybe(ChannelMasking(settings.channel_masking)))
+    # 13: приведение длины ко входу сети — последним, чтобы шумы не испортили добавленные нули
+    ops += [RandomPadding(settings.input_length)] if settings.random_crop else _fit_length_ops(settings)
+    return Compose(ops)
+
+
+def build_training_transforms(settings: AugmentationSettings, preprocessing: Optional[EddyPreprocessing] = None):
+    """Обучающий трансформ. `preprocessing` задан — конвейер ECRv1 с предобработкой на лету
+    (`build_ecr_training_transforms`); иначе — по `settings.pipeline` (ЭКГ или прежний вихретоковый для .pt)."""
     if settings.pipeline == "ecg":
         return build_ecg_training_transforms(settings)
     if settings.pipeline == "ecg_multi":
         return build_ecg_multilead_training_transforms(settings)
-    
-    # входные данные "выравнивниваем" с помощью фурье и подавления прямоугольников, по этому сигналу вычисляем сигма
-    # Работаем с стандартизированными "гразными" (без выравнивания) данным
+    if preprocessing is not None:
+        return build_ecr_training_transforms(settings, preprocessing)
+    return _build_eddy_legacy_training_transforms(settings)
+
+
+def _build_eddy_legacy_training_transforms(settings: AugmentationSettings):
+    """Прежний вихретоковый конвейер для заранее подготовленных 30-канальных .pt (без предобработки на лету).
+
+    Оставлен для старых датасетов; для ECRv1 используется `build_ecr_training_transforms`.
+    """
     ops = [
         # MarkScaling(settings.mark_scaling),
         RandomResize(settings.random_resize),
         RandomCrop(settings.input_length),
     ]
-
-    # Применяются различные аугменатции
     if settings.phase_spectrum_noise > 0:
         ops.append(PhaseSpectrumNoise(settings.phase_spectrum_noise))
     if settings.random_jitter > 0:
@@ -101,37 +175,50 @@ def build_training_transforms(settings: AugmentationSettings):
         ops.append(RandomInvert(settings.random_invert))
     if settings.random_reverse > 0:
         ops.append(RandomReverse(settings.random_reverse))
-    
-    # добавляем аугментацию генерации низкочастотной синусоиды
-    
-    # Добавляем прямоугольник (с случайной вероятностью) (без встроенного подавления)
-    # подавлем прямоугольные помехи помощью ICA (всегда) -> сигнал из 15-канального становится 30-канальным
-    # 15 каналов - "грязные данные", 15 - "чистые"
     if settings.square_noises > 0:
         ops.append(RandomApply(SquareNoises(), p=settings.square_noises))
-    # переводим сигнал обратно в целые числа (умножаем на вычисленное ранее std и прибавляем mean)
-    # применяем фурье-подавление помех к "чистым" данным
     if settings.time_masking > 0:
         ops.append(TimeMasking(settings.time_masking))
-    # вычисляем новые пороговые уровни, перенормируем данные по новым уровням
-    
-    
     if settings.channel_scaling > 0:
         ops.append(ChannelScaling())
     if settings.channel_masking > 0:
         ops.append(ChannelMasking(settings.channel_masking))
-    
     ops.append(RandomPadding(settings.input_length))
-
     return Compose(ops)
 
-def build_validation_transform(settings: AugmentationSettings):
+def build_validation_transform(settings: AugmentationSettings, preprocessing: Optional[EddyPreprocessing] = None):
+    """Трансформ val/test. С `preprocessing` (ECRv1): шаги 1–2, 7, 8, 9, 11 (с кэшем полного результата, если
+    у `preprocessing` задан `cache_dir`) + паддинг до regular_length и ресайз до input_length."""
     ops = []
+    if preprocessing is not None:
+        ops += preprocessing.cached_validation_ops()
     if settings.validation_resize:
         # вихретоковые данные: паддинг до regular_length и ресайз до input_length
-        ops.append(Padding(settings.regular_length))
-        ops.append(Resize(settings.input_length))
+        ops += _fit_length_ops(settings)
     else:
         # ЭКГ: только паддинг до input_length, временной масштаб не меняется
         ops.append(Padding(settings.input_length))
     return Compose(ops)
+
+
+def build_transforms_for_dataset(settings: AugmentationSettings, dataset: Optional[str]):
+    """(train, val/test) трансформы для датасета `dataset` (yaml).
+
+    `format: ecr_npy` — предобработка на лету (`pipeline` должен быть "eddy"); кэш — `preprocess_cache` из yaml.
+    У train и val/test — разные экземпляры `EddyPreprocessing` (свой контекст), дисковый кэш общий.
+    Остальные форматы — как раньше.
+    """
+    fmt, cache = None, None
+    if dataset is not None:
+        with open(dataset, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        fmt, cache = data.get("format"), data.get("preprocess_cache")
+    if fmt != "ecr_npy":
+        return build_training_transforms(settings), build_validation_transform(settings)
+    if settings.pipeline != "eddy":
+        raise ValueError(f"датасет ECRv1 ({dataset}) требует pipeline='eddy', задан {settings.pipeline!r}")
+    if not settings.validation_resize:
+        raise ValueError("датасет ECRv1 требует validation_resize=True")
+    train = build_training_transforms(settings, EddyPreprocessing(cache_dir=cache))
+    test = build_validation_transform(settings, EddyPreprocessing(cache_dir=cache))
+    return train, test

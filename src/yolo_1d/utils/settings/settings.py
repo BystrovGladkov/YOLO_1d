@@ -88,6 +88,12 @@ class AugmentationSettings(BaseModel):
     # параметры для train transform
     mark_scaling: int = Field(300, ge=1, description="Scale used in MarkScaling.")
     random_resize: float = Field(0.1, ge=0.0, description="RandomResize strength.")
+    random_crop: bool = Field(True, description="RandomCrop + RandomPadding to input_length (geometry group); False — "
+                                                "deterministic Padding(regular_length) + Resize(input_length), as in validation.")
+    augment_apply_p: float = Field(0.5, ge=0.0, le=1.0,
+                                   description="ECRv1 pipeline: every augmentation except RandomResize/RandomCrop/"
+                                               "RandomPadding is wrapped in RandomApply with this probability "
+                                               "(multiplied by the augmentation's own probability, if any).")
     
     phase_spectrum_noise: float = Field(0.5, ge=0.0, description="Strength of phase spectrum noise.")
     random_jitter: float = Field(0.6, ge=0.0, description="Strength of jitter.")

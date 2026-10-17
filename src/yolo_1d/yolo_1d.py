@@ -23,7 +23,7 @@ from yolo_1d.utils.dataset import Dataset
 from yolo_1d.utils.multilead_dataset import MultiLeadDataset, dataset_class
 from yolo_1d.utils.delineation import (DelineationMetrics, apply_thresholds, best_class_thresholds,
                                        boxes_to_intervals, detections_to_intervals, format_table)
-from yolo_1d.utils.transforms import EdgeMask, build_lead_transforms, build_training_transforms, build_validation_transform
+from yolo_1d.utils.transforms import EdgeMask, build_lead_transforms, build_transforms_for_dataset
 from yolo_1d.utils.settings import TrainingSettings, get_default_settings, save_settings, read_settings
 from yolo_1d.utils.constants import *
 
@@ -199,9 +199,9 @@ class Trainer:
         """
             Creates transforms for dataLoaders.
         """
-        self._train_transform = build_training_transforms(self._settings.augmentations)
-        # self._train_transform = build_validation_transform(self._settings.augmentations)
-        self._test_transform = build_validation_transform(self._settings.augmentations)
+        # ECRv1 (`format: ecr_npy` в yaml) — предобработка на лету в трансформах; остальные датасеты — как раньше
+        self._train_transform, self._test_transform = build_transforms_for_dataset(self._settings.augmentations,
+                                                                                   self._settings.dataset)
         
     def _load_model_weights(self):
         # paths to resulting files
