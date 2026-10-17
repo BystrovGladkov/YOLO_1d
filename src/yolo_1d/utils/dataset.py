@@ -1,8 +1,9 @@
-from typing import Tuple, Literal
+from typing import Dict, Optional, Tuple, Literal
 import csv
 import math
 import os
 import random
+import warnings
 
 import numpy
 import torch
@@ -11,6 +12,15 @@ from torch.utils import data
 import yaml
 
 from yolo_1d.utils.constants import INPUT_LENGTH
+
+# форматы датасета (ключ `format` в yaml):
+#   "yolo_pt" (по умолчанию) — тензоры .pt, разметка YOLO "cls x_center width" в долях длины;
+#   "ecr_npy" — ECRv1: сигналы .npy (int16, 15 x L), разметка "type begin end" в отсчётах,
+#               классы перекодируются по `class_map` (см. yolo_1d.utils.ecr)
+FORMAT_YOLO_PT = "yolo_pt"
+FORMAT_ECR_NPY = "ecr_npy"
+_ECR_CACHE_VERSION = 1
+
 
 class Dataset(data.Dataset):
     
@@ -58,9 +68,23 @@ class Dataset(data.Dataset):
             - (необязательно) `path` — базовая папка для относительных путей, задаётся
               относительно самого yaml-файла. Без `path` относительные пути, как и раньше,
               отсчитываются от текущей рабочей папки.
+            - (необязательно) `format` — "yolo_pt" (по умолчанию) или "ecr_npy"; для "ecr_npy" —
+              `class_map` (id класса в разметке → номер класса сети) и `preprocess_cache`
+              (папка для кэша разметки; папка датасета может быть только для чтения).
         """
-        data = yaml.safe_load(open(self.filename, encoding="utf-8")) # Парсим yaml - файл
-        
+        with open(self.filename, encoding="utf-8") as f:
+            data = yaml.safe_load(f) # Парсим yaml - файл
+        self.format = data.get("format", FORMAT_YOLO_PT)
+        if self.format not in (FORMAT_YOLO_PT, FORMAT_ECR_NPY):
+            raise ValueError(f"{self.filename}: неизвестный format {self.format!r}")
+        self.class_map: Optional[Dict[int, int]] = None
+        self.cache_dir: Optional[str] = None
+        if self.format == FORMAT_ECR_NPY:
+            if "class_map" not in data:
+                raise ValueError(f"{self.filename}: для format ecr_npy нужен class_map")
+            self.class_map = {int(k): int(v) for k, v in data["class_map"].items()}
+            self.cache_dir = data.get("preprocess_cache")
+
         # Загружаем названия классов
         self.class_names = [i for i in data["names"].values()]
         # Считаем количество классов
@@ -95,6 +119,8 @@ class Dataset(data.Dataset):
             перечисленные ID (имя файла без расширения), в порядке списка.
         """
         files = sorted(os.listdir(self.data_path))
+        if self.format == FORMAT_ECR_NPY:
+            files = [f for f in files if f.endswith(".npy")]
         if self.list_path is None:
             self.filenames = [os.path.join(self.data_path, file) for file in files]
             return
@@ -137,7 +163,79 @@ class Dataset(data.Dataset):
         except AssertionError:
             return None
         return label
-        
+
+    @staticmethod
+    def _read_ecr_label_file(label_file, length: int, class_map: Dict[int, int]):
+        """Разметка ECRv1 ("type begin end" в отсчётах) → (array (n, 3) [cls, x_center, width], список проблем,
+        число удалённых дубликатов).
+
+        Класс перекодируется по `class_map`, координаты нормируются на фактическую длину сигнала `length`.
+        Отметки с неизвестным классом, `end <= begin` или выходом за [0, length] отбрасываются и
+        попадают в список проблем; точные дубликаты удаляются. Нет файла — пустая разметка.
+        """
+        empty = numpy.zeros((0, 3), dtype=numpy.float32)
+        if not os.path.isfile(label_file):
+            return empty, [], 0
+        rows, problems = [], []
+        with open(label_file, encoding="utf-8") as f:
+            for n, line in enumerate(f, 1):
+                parts = line.split()
+                if not parts:
+                    continue
+                try:
+                    cls, begin, end = int(parts[0]), float(parts[1]), float(parts[2])
+                except (ValueError, IndexError):
+                    problems.append(f"строка {n}: не разобрана {line.strip()!r}")
+                    continue
+                if cls not in class_map:
+                    problems.append(f"строка {n}: неизвестный класс {cls}")
+                elif not (0 <= begin < end <= length):
+                    problems.append(f"строка {n}: границы ({begin:g}, {end:g}) вне [0, {length}] или пустые")
+                else:
+                    rows.append((class_map[cls], (begin + end) / 2 / length, (end - begin) / length))
+        if not rows:
+            return empty, problems, 0
+        label = numpy.unique(numpy.array(rows, dtype=numpy.float32), axis=0)
+        return label, problems, len(rows) - len(label)
+
+    def _ecr_labels_cache_path(self) -> str:
+        """Кэш разметки ECRv1: в `preprocess_cache` (если задан), иначе в папке разметки."""
+        if self.list_path is not None:
+            return self.list_path + ".ecr_labels.cache"
+        if self.cache_dir:
+            os.makedirs(self.cache_dir, exist_ok=True)
+            return os.path.join(self.cache_dir, f"{self.type}_ecr_labels.cache")
+        return os.path.join(self.labels_path, "ecr_labels.cache")
+
+    def _load_ecr_labels(self):
+        """Загружает разметку ECRv1 с кэшем.
+
+        Кэш хранит {"meta": {...}, "labels": {путь сигнала: (n, 3)}} и пересоздаётся, если изменились
+        класс-карта, версия формата кэша, набор файлов или папка разметки изменена позже кэша.
+        Длина сигнала берётся из заголовка .npy (без чтения данных). Сводка отброшенных отметок —
+        одним предупреждением.
+        """
+        path = self._ecr_labels_cache_path()
+        meta = {"version": _ECR_CACHE_VERSION, "class_map": self.class_map}
+        fresh = os.path.exists(path) and os.path.getmtime(path) >= os.path.getmtime(self.labels_path)
+        cache = torch.load(path, weights_only=False) if fresh else {}
+        labels = cache.get("labels", {}) if cache.get("meta") == meta else {}
+        if not all(f in labels for f in self.filenames):
+            labels, problems, duplicates = {}, [], 0
+            for filename in self.filenames:
+                length = numpy.load(filename, mmap_mode="r").shape[-1]
+                name = os.path.basename(filename).rsplit(".", 1)[0] + ".txt"
+                label, file_problems, file_dups = self._read_ecr_label_file(
+                    os.path.join(self.labels_path, name), length, self.class_map)
+                labels[filename] = label
+                problems += [f"{name}: {p}" for p in file_problems]
+                duplicates += file_dups
+            if problems or duplicates:
+                msg = f"{self.type}: отброшено некорректных отметок: {len(problems)}, удалено дубликатов: {duplicates}"
+                warnings.warn(msg + ("; например: " + "; ".join(problems[:3]) if problems else ""))
+            torch.save({"meta": meta, "labels": labels}, path)
+        self.labels = {f: labels[f] for f in self.filenames}
+
     def _load_labels(self):
         """
             Loads labels from cache and creates cache if it does not exist.
@@ -147,7 +245,10 @@ class Dataset(data.Dataset):
             какого-либо из текущих файлов или папка разметки изменена позже кэша
             (например, данные подготовлены заново). Примеры с некорректной разметкой
             (значение None в кэше) исключаются из `filenames`, чтобы `labels` и `filenames` совпадали.
+            Для format ecr_npy — отдельная ветка `_load_ecr_labels`.
         """
+        if self.format == FORMAT_ECR_NPY:
+            return self._load_ecr_labels()
         if self.list_path is not None:
             path = self.list_path + ".labels.cache"
         else:
@@ -176,6 +277,9 @@ class Dataset(data.Dataset):
             signal
                 Signal from dataset with index i
         """
+        if self.format == FORMAT_ECR_NPY:
+            # ECRv1: (15, L) int16 → float32; предобработка (ICA, пороги, нормировка) — в трансформе
+            return torch.from_numpy(numpy.load(self.filenames[i]).astype(numpy.float32))
         with open(self.filenames[i], "rb") as f:
             data = torch.load(f, map_location="cpu", weights_only=False)
         data = data.float()
