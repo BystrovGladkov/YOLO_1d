@@ -83,15 +83,16 @@ def build_training_transforms(settings: AugmentationSettings):
         return build_ecg_training_transforms(settings)
     if settings.pipeline == "ecg_multi":
         return build_ecg_multilead_training_transforms(settings)
+    
+    # входные данные "выравнивниваем" с помощью фурье и подавления прямоугольников, по этому сигналу вычисляем сигма
+    # Работаем с стандартизированными "гразными" (без выравнивания) данным
     ops = [
         # MarkScaling(settings.mark_scaling),
         RandomResize(settings.random_resize),
         RandomCrop(settings.input_length),
     ]
 
-    if settings.square_noises > 0:
-        ops.append(RandomApply(SquareNoises(), p=settings.square_noises))
-    
+    # Применяются различные аугменатции
     if settings.phase_spectrum_noise > 0:
         ops.append(PhaseSpectrumNoise(settings.phase_spectrum_noise))
     if settings.random_jitter > 0:
@@ -100,10 +101,23 @@ def build_training_transforms(settings: AugmentationSettings):
         ops.append(RandomInvert(settings.random_invert))
     if settings.random_reverse > 0:
         ops.append(RandomReverse(settings.random_reverse))
-    if settings.channel_scaling > 0:
-        ops.append(ChannelScaling())
+    
+    # добавляем аугментацию генерации низкочастотной синусоиды
+    
+    # Добавляем прямоугольник (с случайной вероятностью) (без встроенного подавления)
+    # подавлем прямоугольные помехи помощью ICA (всегда) -> сигнал из 15-канального становится 30-канальным
+    # 15 каналов - "грязные данные", 15 - "чистые"
+    if settings.square_noises > 0:
+        ops.append(RandomApply(SquareNoises(), p=settings.square_noises))
+    # переводим сигнал обратно в целые числа (умножаем на вычисленное ранее std и прибавляем mean)
+    # применяем фурье-подавление помех к "чистым" данным
     if settings.time_masking > 0:
         ops.append(TimeMasking(settings.time_masking))
+    # вычисляем новые пороговые уровни, перенормируем данные по новым уровням
+    
+    
+    if settings.channel_scaling > 0:
+        ops.append(ChannelScaling())
     if settings.channel_masking > 0:
         ops.append(ChannelMasking(settings.channel_masking))
     
