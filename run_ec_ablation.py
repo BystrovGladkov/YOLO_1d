@@ -4,9 +4,10 @@
     python run_ec_ablation.py make-configs                    # experiments/ec_ablation/configs/{A0..A8,IN_*}.yaml
     python run_ec_ablation.py make-configs --in-base A6       # база для IN_raw / IN_filtered (после E4)
     python run_ec_ablation.py train A3 --seeds 0 1 2          # обучение + оценка val/test
-    python run_ec_ablation.py train A0 --seeds 0 --epochs 2   # смоук (E1)
+    python run_ec_ablation.py train A8 --seeds 0 --epochs 50  # пилот бюджета (E1b) → runs_budget/A8_e50_s0
     python run_ec_ablation.py noisy-test A0 A8 --seeds 0 1 2  # E5: оценка на test + SquareNoises
     python run_ec_ablation.py summary                         # summary.csv, summary_agg.csv, summary.md
+    python run_ec_ablation.py summary --budget                # сводка пилота: experiments/ec_ablation/budget/
 
 Конфиги: кумулятивные A0…A8 (таблица `GROUPS`; источник истины — этот файл, yaml генерируются из него) и
 IN_raw / IN_filtered (итоговый набор с подмножеством входных каналов, E6; поле `input_subset` — D8). Каждый
@@ -21,6 +22,11 @@ yaml — полный и явный: `name`, `description`, `dataset`, `seeds`, 
     noisy_test.json      (E5) метрики на test + SquareNoises
     run.json             чекпоинт, длительность
 Готовый прогон (есть metrics.json) повторно не обучается; незавершённый — продолжается (`resume`); --rerun — заново.
+
+Бюджет (E1b, D9): `--epochs N` переопределяет `training.epochs`; такие прогоны идут в отдельный каталог
+`experiments/ec_ablation/runs_budget/<ID>_e<N>_s<seed>/` и не пересекаются с основной абляцией (`runs/<ID>_s<seed>`).
+Сводка группирует прогоны по (конфиг, epochs); колонки `epochs`, `stopped_epoch` (последняя эпоха в step.csv),
+`best_epoch` (эпоха best.pt — первый максимум val mAP@0.5:0.95).
 Seed задаёт инициализацию весов (Trainer вызывает `setup_seed` до создания модели), порядок батчей и аугментации.
 """
 import argparse
@@ -51,6 +57,8 @@ from yolo_1d.utils.settings import AugmentationSettings, TrainingSettings  # noq
 EXP_DIR = REPO / "experiments" / "ec_ablation"
 CONFIG_DIR = EXP_DIR / "configs"
 RUNS_DIR = EXP_DIR / "runs"
+RUNS_BUDGET_DIR = EXP_DIR / "runs_budget"
+BUDGET_DIR = EXP_DIR / "budget"
 DATASET = "data/ecr_v1.yaml"
 SEEDS = [0, 1, 2]
 NAMES = ["flashbutt", "aluminothermic", "rail end", "axle counter", "crossing", "manual arc"]
@@ -62,7 +70,8 @@ BASE_TRAINING = {
     "batch_size": 50,
     "epochs": 300,
     "enable_amp": True,
-    "early_stopping_epochs": 20,
+    # E1b: одинаковый бюджет для всех конфигов, расписание LinearLR доходит до конца — без ранней остановки
+    "early_stopping_epochs": 0,
     "weight_box": 10,
     "weight_dfl": 3,
     # E1: предобработка (ICA шага 7 на каждый пример) — узкое место; 15 воркеров на i5-13400F (16 потоков);
@@ -151,14 +160,27 @@ def check_training_keys(training: dict) -> None:
 
 
 def load_config(config_id: str, config_dir: Path = CONFIG_DIR, epochs: Optional[int] = None) -> dict:
+    """Конфиг из yaml. `epochs` переопределяет бюджет и помечает конфиг полем `budget` (→ имя `<ID>_e<N>`)."""
     path = config_dir / f"{config_id}.yaml"
     if not path.is_file():
         raise FileNotFoundError(f"{path}: нет конфига, выполните `python run_ec_ablation.py make-configs`")
     config = yaml.safe_load(path.read_text(encoding="utf-8"))
     if epochs is not None:
         config["training"]["epochs"] = epochs
+        config["budget"] = epochs
     check_training_keys(config["training"])
     return config
+
+
+def run_name(config: dict, seed: int) -> str:
+    """Имя каталога прогона: `<ID>_s<seed>`, при переопределённом бюджете — `<ID>_e<N>_s<seed>`."""
+    budget = config.get("budget")
+    return f"{config['name']}_e{budget}_s{seed}" if budget is not None else f"{config['name']}_s{seed}"
+
+
+def default_runs_dir(config: dict) -> Path:
+    """Прогоны с переопределённым бюджетом — в `runs_budget/`, остальные — в `runs/`."""
+    return RUNS_BUDGET_DIR if config.get("budget") is not None else RUNS_DIR
 
 
 # ------------------------------------------------------------------ обучение и оценка
@@ -209,9 +231,9 @@ def _load_best(trainer) -> str:
     return "last (best.pt не создан)"
 
 
-def run_one(config: dict, seed: int, runs_dir: Path = RUNS_DIR, rerun: bool = False) -> Path:
-    """Обучение и оценка одного конфига с одним seed."""
-    run_dir = runs_dir / f"{config['name']}_s{seed}"
+def run_one(config: dict, seed: int, runs_dir: Optional[Path] = None, rerun: bool = False) -> Path:
+    """Обучение и оценка одного конфига с одним seed (каталог — `default_runs_dir`, если не задан)."""
+    run_dir = (runs_dir or default_runs_dir(config)) / run_name(config, seed)
     if (run_dir / "metrics.json").is_file() and not rerun:
         print(f"[skip] {run_dir.name}: уже есть metrics.json")
         return run_dir
@@ -283,11 +305,11 @@ def noisy_test_transform(settings: AugmentationSettings, cache_dir: Optional[str
     return Compose(ops + [Padding(settings.regular_length), Resize(settings.input_length)])
 
 
-def run_noisy_test(config: dict, seed: int, runs_dir: Path = RUNS_DIR, noise_seed: int = 0) -> Path:
+def run_noisy_test(config: dict, seed: int, runs_dir: Optional[Path] = None, noise_seed: int = 0) -> Path:
     from torch.utils.data import DataLoader
     from yolo_1d.utils.dataset import Dataset
 
-    run_dir = runs_dir / f"{config['name']}_s{seed}"
+    run_dir = (runs_dir or default_runs_dir(config)) / run_name(config, seed)
     if not (run_dir / "metrics.json").is_file():
         raise FileNotFoundError(f"{run_dir}: прогон не завершён")
     trainer = make_trainer(config, run_dir, seed, resume=True)
@@ -309,12 +331,33 @@ def run_noisy_test(config: dict, seed: int, runs_dir: Path = RUNS_DIR, noise_see
 
 # ------------------------------------------------------------------ сводка
 
+def training_progress(run_dir: Path) -> dict:
+    """`stopped_epoch` — последняя эпоха в step.csv; `best_epoch` — первый максимум val mAP (эпоха best.pt)."""
+    step = run_dir / "train1" / "step.csv"
+    if not step.is_file():
+        return {}
+    with open(step, encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        return {}
+    out = {"stopped_epoch": int(rows[-1]["epoch"])}
+    scored = [(float(r["mAP"]), int(r["epoch"])) for r in rows if r.get("mAP")]
+    if scored:
+        best = max(s for s, _ in scored)
+        out["best_epoch"] = next(e for s, e in scored if s == best)
+    return out
+
+
 def collect(runs_dir: Path = RUNS_DIR) -> List[dict]:
-    """Строки по прогонам: конфиг, seed, метрики val/test(/test_noisy), AP по классам на test."""
+    """Строки по прогонам: конфиг, seed, бюджет, метрики val/test(/test_noisy), AP по классам на test."""
     rows = []
     for metrics_path in sorted(runs_dir.glob("*_s*/metrics.json")):
         m = json.loads(metrics_path.read_text(encoding="utf-8"))
         row = {"config": m["config"], "seed": m["seed"]}
+        config_path = metrics_path.parent / "config.yaml"
+        if config_path.is_file():
+            row["epochs"] = yaml.safe_load(config_path.read_text(encoding="utf-8"))["training"]["epochs"]
+        row.update(training_progress(metrics_path.parent))
         for split in ("val", "test"):
             row.update({f"{split}_{k}": m[split][k] for k in METRIC_KEYS})
         for name, v in m["test"].get("per_class", {}).items():
@@ -333,34 +376,44 @@ def _order(config: str) -> tuple:
     return (ids.index(config) if config in ids else len(ids), config)
 
 
+_KEY_FIELDS = ("config", "epochs", "seed")
+
+
 def summarize(runs_dir: Path = RUNS_DIR, out_dir: Path = EXP_DIR) -> List[dict]:
-    """summary.csv (по прогонам), summary_agg.csv (mean ± SD по seed), summary.md."""
-    rows = sorted(collect(runs_dir), key=lambda r: (_order(r["config"]), r["seed"]))
+    """summary.csv (по прогонам), summary_agg.csv (mean ± SD по seed для каждой пары конфиг × epochs), summary.md."""
+    rows = sorted(collect(runs_dir), key=lambda r: (_order(r["config"]), r.get("epochs") or 0, r["seed"]))
     out_dir.mkdir(parents=True, exist_ok=True)
-    fields = sorted({k for r in rows for k in r}, key=lambda k: (k not in ("config", "seed"), k))
+    fields = sorted({k for r in rows for k in r},
+                    key=lambda k: (_KEY_FIELDS.index(k) if k in _KEY_FIELDS else len(_KEY_FIELDS), k))
     with open(out_dir / "summary.csv", "w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
         writer.writerows(rows)
     agg = []
-    for config in sorted({r["config"] for r in rows}, key=_order):
-        runs = [r for r in rows if r["config"] == config]
-        a = {"config": config, "n_seeds": len(runs)}
-        for k in fields[2:]:
+    groups = sorted({(r["config"], r.get("epochs")) for r in rows}, key=lambda g: (_order(g[0]), g[1] or 0))
+    for config, epochs in groups:
+        runs = [r for r in rows if r["config"] == config and r.get("epochs") == epochs]
+        a = {"config": config, "epochs": epochs, "n_seeds": len(runs)}
+        for k in [k for k in fields if k not in _KEY_FIELDS]:
             vals = [r[k] for r in runs if k in r]
             if vals:
                 a[f"{k}_mean"], a[f"{k}_sd"] = float(np.mean(vals)), float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0
         agg.append(a)
-    agg_fields = sorted({k for a in agg for k in a}, key=lambda k: (k not in ("config", "n_seeds"), k))
+    head = ("config", "epochs", "n_seeds")
+    agg_fields = sorted({k for a in agg for k in a}, key=lambda k: (head.index(k) if k in head else len(head), k))
     with open(out_dir / "summary_agg.csv", "w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=agg_fields)
         writer.writeheader()
         writer.writerows(agg)
     lines = ["# Абляция аугментаций ECRv1", "", "Test, mean ± SD по seed (mAP — mAP@0.5:0.95, макро по 6 классам).", "",
-             "| конфиг | seeds | mAP | mAP@50 | P | R | mAP, test + шум |", "|---|---|---|---|---|---|---|"]
+             "| конфиг | epochs | seeds | эпоха best.pt | mAP | mAP@50 | P | R | mAP, test + шум |",
+             "|---|---|---|---|---|---|---|---|---|"]
     fmt = lambda a, k: (f"{100 * a[k + '_mean']:.2f} ± {100 * a[k + '_sd']:.2f}" if k + "_mean" in a else "—")
     for a in agg:
-        lines.append(f"| {a['config']} | {a['n_seeds']} | {fmt(a, 'test_mAP')} | {fmt(a, 'test_mAP@50')} | "
+        best = f"{a['best_epoch_mean']:.0f}" if "best_epoch_mean" in a else "—"
+        epochs = a["epochs"] if a["epochs"] is not None else "—"
+        lines.append(f"| {a['config']} | {epochs} | {a['n_seeds']} | {best} | "
+                     f"{fmt(a, 'test_mAP')} | {fmt(a, 'test_mAP@50')} | "
                      f"{fmt(a, 'test_Precision')} | {fmt(a, 'test_Recall')} | {fmt(a, 'test_noisy_mAP')} |")
     (out_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return agg
@@ -381,12 +434,13 @@ def main(argv=None) -> int:
         p = sub.add_parser(name)
         p.add_argument("configs", nargs="+", help="ID конфигов (A0 … A8, IN_raw, IN_filtered)")
         p.add_argument("--seeds", type=int, nargs="+", help="переопределить seeds конфига")
-        p.add_argument("--epochs", type=int, help="переопределить training.epochs (смоук)")
+        p.add_argument("--epochs", type=int, help="переопределить training.epochs (пилот бюджета; → runs_budget/)")
         if name == "train":
             p.add_argument("--rerun", action="store_true", help="обучить заново, удалив прежний прогон")
         else:
             p.add_argument("--noise-seed", type=int, default=0, help="seed зашумлённой копии test")
-    sub.add_parser("summary", help="пересобрать сводку по готовым прогонам")
+    p = sub.add_parser("summary", help="пересобрать сводку по готовым прогонам")
+    p.add_argument("--budget", action="store_true", help="сводка пилота бюджета (runs_budget/ → budget/)")
     args = parser.parse_args(argv)
 
     if args.command == "make-configs":
@@ -394,8 +448,9 @@ def main(argv=None) -> int:
             print(path.relative_to(REPO))
         return 0
     if args.command == "summary":
-        summarize()
-        print((EXP_DIR / "summary.md").read_text(encoding="utf-8"))
+        runs_dir, out_dir = (RUNS_BUDGET_DIR, BUDGET_DIR) if args.budget else (RUNS_DIR, EXP_DIR)
+        summarize(runs_dir, out_dir)
+        print((out_dir / "summary.md").read_text(encoding="utf-8"))
         return 0
     for cid in args.configs:
         config = load_config(cid, epochs=args.epochs)
@@ -405,7 +460,10 @@ def main(argv=None) -> int:
                 run_one(config, seed, rerun=args.rerun)
             else:
                 run_noisy_test(config, seed, noise_seed=args.noise_seed)
-    summarize()
+    if args.epochs is not None:
+        summarize(RUNS_BUDGET_DIR, BUDGET_DIR)
+    else:
+        summarize()
     return 0
 
 

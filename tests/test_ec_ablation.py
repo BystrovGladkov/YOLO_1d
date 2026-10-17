@@ -80,9 +80,15 @@ def test_metrics_per_class_names():
     assert "per_class_unnamed" in m
 
 
-def fake_run(runs, cid, seed, mAP, noisy=None):
-    d = runs / f"{cid}_s{seed}"
+def fake_run(runs, cid, seed, mAP, noisy=None, epochs=None, val_curve=None):
+    d = runs / (f"{cid}_e{epochs}_s{seed}" if epochs else f"{cid}_s{seed}")
     d.mkdir(parents=True)
+    if epochs:
+        (d / "config.yaml").write_text(yaml.safe_dump({"name": cid, "training": {"epochs": epochs}}))
+    if val_curve:
+        (d / "train1").mkdir()
+        lines = ["epoch,box_train,mAP", "001,1.0,"] + [f"{i + 2:03d},1.0,{v}" for i, v in enumerate(val_curve)]
+        (d / "train1" / "step.csv").write_text("\n".join(lines) + "\n")
     split = {"mAP": mAP, "mAP@50": mAP + 0.1, "Precision": 0.5, "Recall": 0.5,
              "per_class": {n: {"AP": mAP, "AP@50": mAP, "Precision": 0, "Recall": 0} for n in r.NAMES}}
     (d / "metrics.json").write_text(json.dumps({"config": cid, "seed": seed, "val": split, "test": split}))
@@ -103,7 +109,43 @@ def test_summary(tmp_path):
     assert a1["test_noisy_mAP_mean"] == pytest.approx(0.3)
     assert (tmp_path / "summary.csv").read_text(encoding="utf-8").startswith("config,seed,")
     md = (tmp_path / "summary.md").read_text(encoding="utf-8")
-    assert "| A1 | 2 | 50.00 ± 14.14" in md
+    assert "| A1 | — | 2 | — | 50.00 ± 14.14" in md
+
+
+def test_budget_run_names_do_not_collide():
+    main = r.make_config("A8")
+    budget = {**r.make_config("A8"), "budget": 50}
+    assert r.run_name(main, 0) == "A8_s0" and r.run_name(budget, 0) == "A8_e50_s0"
+    assert r.default_runs_dir(main) == r.RUNS_DIR and r.default_runs_dir(budget) == r.RUNS_BUDGET_DIR
+    assert r.RUNS_DIR != r.RUNS_BUDGET_DIR
+    assert r.BASE_TRAINING["early_stopping_epochs"] == 0
+
+
+def test_load_config_epochs_marks_budget(tmp_path):
+    r.write_configs(tmp_path)
+    assert "budget" not in r.load_config("A0", tmp_path)
+    c = r.load_config("A0", tmp_path, epochs=50)
+    assert c["budget"] == 50 and c["training"]["epochs"] == 50
+
+
+def test_training_progress(tmp_path):
+    fake_run(tmp_path, "A8", 0, 0.5, epochs=5, val_curve=[0.1, 0.4, 0.4, 0.3])
+    p = r.training_progress(tmp_path / "A8_e5_s0")
+    assert p == {"stopped_epoch": 5, "best_epoch": 3}               # первый максимум, эпоха 1 без mAP
+    assert r.training_progress(tmp_path / "missing") == {}
+
+
+def test_budget_summary_groups_by_epochs(tmp_path):
+    runs = tmp_path / "runs_budget"
+    fake_run(runs, "A8", 0, 0.70, epochs=100, val_curve=[0.5, 0.7])
+    fake_run(runs, "A8", 0, 0.60, epochs=50, val_curve=[0.6, 0.5])
+    fake_run(runs, "A0", 0, 0.30, epochs=50, val_curve=[0.3])
+    agg = r.summarize(runs, tmp_path)
+    assert [(a["config"], a["epochs"]) for a in agg] == [("A0", 50), ("A8", 50), ("A8", 100)]
+    assert [a["n_seeds"] for a in agg] == [1, 1, 1]
+    assert agg[2]["test_mAP_mean"] == pytest.approx(0.70) and agg[1]["best_epoch_mean"] == 2
+    assert (tmp_path / "summary.csv").read_text(encoding="utf-8").startswith("config,epochs,seed,")
+    assert "| A8 | 100 | 1 | 3 | 70.00 ± 0.00" in (tmp_path / "summary.md").read_text(encoding="utf-8")
 
 
 def test_noisy_test_transform_deterministic(tmp_path):

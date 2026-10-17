@@ -7,7 +7,7 @@ import argparse, json, sys, threading, time
 from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src")); sys.path.insert(0, str(REPO))
-from run_ec_ablation import EXP_DIR, load_config, run_one
+from run_ec_ablation import EXP_DIR, load_config, run_name, run_one
 
 def watch(step_csv: Path, out: Path, stop: threading.Event):
     t0, seen, times = time.time(), 0, []
@@ -25,7 +25,7 @@ def main():
     config = load_config(a.config, epochs=a.epochs)
     config["training"]["num_workers"] = a.workers
     runs = EXP_DIR / "e1" / "runs"
-    run_dir = runs / f"{config['name']}_s{a.seed}"
+    run_dir = runs / run_name(config, a.seed)
     stop = threading.Event()
     threading.Thread(target=watch, args=(run_dir / "train1" / "step.csv", run_dir / "epoch_times.json", stop), daemon=True).start()
     for s in (sys.stdout, sys.stderr): s.reconfigure(encoding="utf-8")

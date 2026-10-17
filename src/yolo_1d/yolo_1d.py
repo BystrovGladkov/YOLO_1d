@@ -309,9 +309,10 @@ class Trainer:
             for epoch in range(self._start_epoch, self._settings.epochs):
                 self._epoch_results = dict()
                 self._model.train()
-                # turn off mosaic augmentations at last 10 epochs
+                # adversarial-примеры выключаются на последних 10 эпохах. Mosaic не выключается (решение
+                # пользователя 2026-10-17, E1): в SPEC этого нет, а при persistent_workers присваивание
+                # dataset.mosaic_prob в главном процессе до воркеров всё равно не доходило
                 if self._settings.epochs - epoch < 10:
-                    self._train_loader.dataset.mosaic_prob = 0
                     self._adversarial = 0
                 # size of progress bar
                 p_bar = enumerate(self._train_loader)

@@ -19,7 +19,7 @@ training:
   batch_size: 50
   epochs: 300
   enable_amp: true
-  early_stopping_epochs: 20
+  early_stopping_epochs: 0
   weight_box: 10
   weight_dfl: 3
   num_workers: 15
