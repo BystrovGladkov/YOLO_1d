@@ -163,6 +163,8 @@ class TrainingSettings(BaseModel):
     # training settings
     enable_amp: bool = Field(False, description="Enable AMP (automatic mixed precision).")
     num_workers: int = Field(0, description="Number of threads used in data loaders.")
+    eval_num_workers: Optional[int] = Field(None, ge=0, description="Workers of val/test loaders; None — as "
+                                            "num_workers. Persistent workers of three loaders add up in RAM (E1).")
     epochs: int = Field(10, ge=1, description="Number of Epochs of training.")
     batch_size: int = Field(32, ge=1, description="Size of batch in training.")
     early_stopping_epochs: int = Field(0, ge=0, description="Number of epochs for early stop of training.")

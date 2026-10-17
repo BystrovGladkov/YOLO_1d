@@ -22,7 +22,8 @@ training:
   early_stopping_epochs: 20
   weight_box: 10
   weight_dfl: 3
-  num_workers: 4
+  num_workers: 15
+  eval_num_workers: 4
   best_metric: mAP
   augmentations:
     pipeline: eddy

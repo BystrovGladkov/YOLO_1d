@@ -27,10 +27,16 @@ import argparse
 import copy
 import csv
 import json
+import os
 import shutil
 import sys
 import time
 from pathlib import Path
+
+# E1: каждый воркер DataLoader считает FastICA сам; без ограничения BLAS 15 воркеров делят ядра потоками
+# друг друга (−10 % скорости). Переменные наследуются воркерами при запуске (spawn).
+for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -59,7 +65,10 @@ BASE_TRAINING = {
     "early_stopping_epochs": 20,
     "weight_box": 10,
     "weight_dfl": 3,
-    "num_workers": 4,
+    # E1: предобработка (ICA шага 7 на каждый пример) — узкое место; 15 воркеров на i5-13400F (16 потоков);
+    # val/test из кэша — 4 воркера (воркеры трёх загрузчиков живут одновременно, ≈ 1.4 ГБ каждый)
+    "num_workers": 15,
+    "eval_num_workers": 4,
     # выбор best.pt — по mAP@0.5:0.95 на val (решение пользователя 2026-10-17; Trainer: r["mAP"])
     "best_metric": "mAP",
 }

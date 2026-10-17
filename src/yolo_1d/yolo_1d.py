@@ -165,8 +165,15 @@ class Trainer:
             loader_kwargs.update(persistent_workers=True, worker_init_fn=_seed_worker)
         self._train_loader = data.DataLoader(self._train_dataset, self._settings.batch_size, sampler=sampler,
                                              **loader_kwargs)
-        self._val_loader = data.DataLoader(self._val_dataset, self._settings.batch_size, shuffle=False, **loader_kwargs)
-        self._test_loader = data.DataLoader(self._test_dataset, self._settings.batch_size, shuffle=False, **loader_kwargs)
+        # val/test: отдельное число воркеров (eval_num_workers); воркеры трёх загрузчиков живут одновременно
+        eval_workers = self._settings.eval_num_workers
+        eval_kwargs = dict(loader_kwargs)
+        if eval_workers is not None:
+            eval_kwargs = dict(num_workers=eval_workers, pin_memory=True, collate_fn=dataset_cls.collate_fn)
+            if eval_workers > 0:
+                eval_kwargs.update(persistent_workers=True, worker_init_fn=_seed_worker)
+        self._val_loader = data.DataLoader(self._val_dataset, self._settings.batch_size, shuffle=False, **eval_kwargs)
+        self._test_loader = data.DataLoader(self._test_dataset, self._settings.batch_size, shuffle=False, **eval_kwargs)
 
     def _init_training(self):
         """
