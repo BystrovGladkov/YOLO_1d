@@ -143,7 +143,16 @@
 
 ## Этап 2. Подготовка абляции
 
-- [~] **D7** `[DEV]` **Конфиги и раннер абляции.**
+- [x] **D7** `[DEV]` **Конфиги и раннер абляции.**
+  **Сделано (2026-10-17):** отдельный раннер [run_ec_ablation.py](run_ec_ablation.py) (ЭКГ-раннер `run_experiment.py` заточен под фолды и метрики делинеации — не тронут, из него переиспользуется `environment()`):
+  - таблица `GROUPS` — единственный источник групп; `make-configs` генерирует полные явные yaml в [experiments/ec_ablation/configs/](experiments/ec_ablation/configs/) (A0…A8, IN_raw, IN_filtered; `--in-base` — база для IN, по умолчанию A8); `check_training_keys` — неизвестные поля конфига = ошибка (pydantic их молча игнорирует; поэтому IN_* пока не запускаются — поле `input_subset` появится в D8);
+  - `train <ID…> [--seeds] [--epochs] [--rerun]` → `runs/<ID>_s<seed>/`: `train1/` (Trainer), `config.yaml`, `environment.json`, `metrics.json` (val/test mAP, mAP@50, P, R + по классам), `predictions_test.npz` (детекции и разметка по сигналам для bootstrap; `load_predictions`), `run.json`; готовый прогон пропускается, незавершённый продолжается (`resume`);
+  - `noisy-test <ID…>` (E5) — test + SquareNoises на шаге 6: помеха детерминирована по содержимому сигнала и `--noise-seed`, кэш отдельно от чистого test → `noisy_test.json`;
+  - `summary` → `summary.csv` (по прогонам), `summary_agg.csv` (mean ± SD по seed), `summary.md`;
+  - stdout/stderr переключаются на UTF-8 (иначе при перенаправлении в файл на Windows `torchinfo` падает на cp1251).
+  - Тесты [tests/test_ec_ablation.py](tests/test_ec_ablation.py) (8, без GPU): кумулятивность групп, валидность конфигов как `TrainingSettings`, проверка полей, сохранение/чтение предсказаний, сводка, детерминизм зашумлённого test. Весь набор 213 passed.
+  - **Смоук с реальным Trainer** (подмножество ECRv1 8/4/4 сигнала через `*_list`, nano, 1 эпоха, GPU): A0 и A8 (с mosaic, mix-up, SineNoise, SquareNoises) — обучение, оценка val/test, noisy-test и сводка проходят без ошибок (метрики ≈ 0, как и ожидается после 1 эпохи).
+  - Не сделано здесь: bootstrap-доверительные интервалы — в E4 по сохранённым `predictions_test.npz`. `best_metric: mAP` (mAP@0.5:0.95 на val) — решение пользователя; `epochs: 300` — вопрос 3.
   Режим в `run_experiment.py` для вихретоковых данных. Базовый конфиг из `start_example.py`: `model_size="large"`, `batch_size=50`, `enable_amp`, `weight_box=10`, `weight_dfl=3`, `early_stopping_epochs=20`, `names` 0–5, `dataset` — манифест ECRv1 (D2). Девять кумулятивных конфигов в `experiments/ec_ablation/configs/`; каждая аугментация, кроме RandomResize/RandomCrop/RandomPadding, дополнительно под `RandomApply(0.5)`:
 
   | ID | Добавляемая группа | Параметры (из `start_example.py`, если не указано) |
@@ -224,3 +233,5 @@
 
 Открыто:
 1. **Битые каналы при mosaic (D4).** Склейка двух сигналов проходит шаг 1 целиком; канал, мёртвый только в одной части, критерием Кузьмина по всей склейке битым не признаётся и попадает в ICA (с нулевой половиной). **Решение отложено (пользователь, 2026-10-17):** пока (а) — оставить как есть (по мнению пользователя, ICA это не должно ломать). Если в E1–E3 появятся проблемы (предупреждения о несходимости FastICA, NaN, выбросы потерь на mosaic-примерах) — переделать mosaic: (б) битость по каждой части с объединением масок или (в) не склеивать сигналы с несовпадающими битыми каналами. В E1 отдельно проверить логи на такие признаки.
+2. ~~Выбор `best.pt`~~ — решено пользователем (2026-10-17): `best_metric: mAP` (mAP@0.5:0.95 на val, макро по классам; `BASE_TRAINING` в `run_ec_ablation.py`, конфиги перегенерированы).
+3. **Число эпох (D7 → E1).** В конфигах стоит `epochs: 300` с `early_stopping_epochs: 20` (в `start_example.py` — 500); окончательно — по замеру времени эпохи в E1.

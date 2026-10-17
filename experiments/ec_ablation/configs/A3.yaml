@@ -1,0 +1,45 @@
+# Сгенерировано: python run_ec_ablation.py make-configs (таблица GROUPS). Правки — в run_ec_ablation.py.
+name: A3
+description: 'Кумулятивная абляция: + аддитивный шум (RandomJitter).'
+dataset: data/ecr_v1.yaml
+seeds:
+- 0
+- 1
+- 2
+training:
+  names:
+  - flashbutt
+  - aluminothermic
+  - rail end
+  - axle counter
+  - crossing
+  - manual arc
+  model_size: large
+  batch_size: 50
+  epochs: 300
+  enable_amp: true
+  early_stopping_epochs: 20
+  weight_box: 10
+  weight_dfl: 3
+  num_workers: 4
+  best_metric: mAP
+  augmentations:
+    pipeline: eddy
+    regular_length: 50000
+    input_length: 49152
+    validation_resize: true
+    random_resize: 0.1
+    random_crop: true
+    random_reverse: 0.5
+    phase_spectrum_noise: 0.5
+    random_jitter: 0.6
+    random_invert: 0
+    channel_scaling: 0
+    time_masking: 0
+    channel_masking: 0
+    mosaic: 0
+    mix_up: 0
+    sine_noise: 0
+    square_noises: 0
+    adversarial: 0
+    augment_apply_p: 0.5
