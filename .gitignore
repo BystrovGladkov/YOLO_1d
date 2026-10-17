@@ -158,6 +158,8 @@ runs
 # datasets (downloaded by data/download_*.py)
 data/raw/
 data/processed/
+# кэш предобработки ECRv1 (yolo_1d.utils.ecr, preprocess_cache)
+data/cache/
 # Dataset label caches
 labels.cache
 *.labels.cache
