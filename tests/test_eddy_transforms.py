@@ -73,7 +73,8 @@ def test_corrected_sigma_uses_corrected_threshold1():
     t1, t2, c1, c2 = [], [], [], []
     Get_Signal_Thresholds(x.T, t1, t2, c1, c2)
     sigma, fallback = pp.corrected_sigma(x, list(range(15)))
-    np.testing.assert_array_equal(sigma, [min(abs(t.thplus), abs(t.thmins)) / 3 for t in c1])
+    expected = np.array([min(abs(t.thplus), abs(t.thmins)) for t in c1], dtype=np.float32) / 3
+    np.testing.assert_array_equal(sigma, expected)
     assert not fallback
 
 
@@ -96,11 +97,11 @@ def test_step_shapes_and_dtypes():
     z, b2, c2 = pre.reference(x, b, c)
     assert z.shape == (15, 6000) and z.dtype == torch.float32 and b2 is b and c2 is c
     y, _, _ = pre.ica(z, b, c)
-    assert y.shape == (30, 6000) and y.dtype == torch.float64
-    torch.testing.assert_close(y[:15], z.double())           # «грязная» половина — вход без изменений
+    assert y.shape == (30, 6000) and y.dtype == torch.float32
+    torch.testing.assert_close(y[:15], z, rtol=0, atol=0)           # «грязная» половина — вход без изменений
     y, _, _ = pre.destandardize(y, b, c)
     y, _, _ = pre.fourier(y, b, c)
-    assert y.dtype == torch.float64
+    assert y.dtype == torch.float32
     y, _, _ = pre.normalize(y, b, c)
     assert y.shape == (30, 6000) and y.dtype == torch.float32 and torch.isfinite(y).all()
     assert pre.context.ref is None                            # контекст очищен шагом 11

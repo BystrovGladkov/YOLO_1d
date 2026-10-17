@@ -332,68 +332,65 @@ class OnlineRobustSegmenter:
     def process_signal(self, mask: np.ndarray, signal: np.ndarray) -> np.ndarray:
         """
         Обрабатывает весь сигнал целиком, но эмулирует потоковую обработку.
-        Возвращает маску.
+        Отмечает аномальные отсчёты в `mask` (на месте); возвращает (mask, median_array, mad_array).
+        Цикл вынесен в numba-функцию `_robust_segment` (результат совпадает с прежней Python-версией побитно).
         """
-        n = len(signal)
-        median_array = []
-        mad_array = []
-        
-        # Для удобства храним историю адаптивных порогов (для отладки), если нужно
-        # Но для маски достаточно прохода
-        
-        # Инициализация первыми значениями
-        self.median_est = signal[0]
-        self.mad_est = 1
+        median_array, mad_array = _robust_segment(mask, signal, self.alpha, self.sigma_coef,
+                                                  self.robust_sogma_coef, self.k_mad, self.offset)
+        self.median_est = median_array[-1]
+        self.mad_est = mad_array[-1]
         self.initialized = True
-            
-
-        for i in range(1, n):
-            if i > self.offset:
-                median_array.append(self.median_est)
-                mad_array.append(self.mad_est)
-
-            # 1. Расчет порога на основе ПРЕДЫДУЩЕГО состояния (чтобы сохранить каузальность)
-            # Если использовать текущее, то сильный выброс мгновенно расширит границы
-            sigma = self.k_mad * self.mad_est
-            
-            # 2. Проверка условия (Сегментация)
-            threshold = self.sigma_coef * sigma
-            # Избегаем деления на ноль или слишком малых порогов
-            if threshold < 1e-5:
-                threshold = 1e-5
-            if i > self.offset:
-                deviation = signal[i - self.offset] - self.median_est
-                if abs(deviation) > threshold:
-                    mask[i - self.offset] = 1
-            
-            # 3. Обновление статистик (Robust Update)
-            threshold = self.robust_sogma_coef * sigma
-            # Избегаем деления на ноль или слишком малых порогов
-            if threshold < 1e-5:
-                threshold = 1e-5
-            # ТРЮК: Чтобы оценка центра (median_est) вела себя как МЕДИАНА (игнорировала выбросы),
-            # мы обновляем её с использованием "винзоризированного" (обрезанного) значения.
-            # Если x - выброс, мы тянем среднее к нему не сильно, а только до границы порога.
-            x = signal[i]
-            deviation = x - self.median_est
-            if abs(deviation) > threshold:
-                # Если выброс, обновляемся так, будто пришло значение ровно на границе 3*sigma
-                # Это предотвращает "утягивание" базовой линии треугольным импульсом
-                clipped_val = self.median_est + np.sign(deviation) * threshold
-                self.median_est = self.alpha * clipped_val + (1 - self.alpha) * self.median_est
-                input_for_mad_ema = threshold #/ self.k_mad
-            else:
-                # Если норма - обычное EMA
-                self.median_est = self.alpha * x + (1 - self.alpha) * self.median_est
-                input_for_mad_ema = abs(deviation)
-            
-            # 4. Обновление MAD (EMMAD)
-            self.mad_est = self.alpha * input_for_mad_ema + (1 - self.alpha) * self.mad_est
-
-        median_array.append(self.median_est)
-        mad_array.append(self.mad_est)
         return mask, median_array, mad_array
-    
+
+
+@njit(cache=True)
+def _robust_segment(mask, signal, alpha, sigma_coef, robust_sigma_coef, k_mad, offset):
+    """Цикл `OnlineRobustSegmenter.process_signal`: EMA-медиана и EMA-MAD с винзоризацией.
+
+    Отсчёт i − offset помечается в `mask`, если отклоняется от оценки медианы больше чем на
+    sigma_coef · k_mad · MAD (оценки по предыдущему состоянию — каузально). Возвращает истории оценок
+    медианы и MAD (длина n − offset), как списки прежней версии.
+    """
+    n = len(signal)
+    m = max(n - 1 - offset, 0) + 1
+    median_array = np.empty(m, dtype=np.float64)
+    mad_array = np.empty(m, dtype=np.float64)
+    k = 0
+    median_est = float(signal[0])
+    mad_est = 1.0
+    for i in range(1, n):
+        if i > offset:
+            median_array[k] = median_est
+            mad_array[k] = mad_est
+            k += 1
+        # порог по ПРЕДЫДУЩЕМУ состоянию (каузальность)
+        sigma = k_mad * mad_est
+        threshold = sigma_coef * sigma
+        if threshold < 1e-5:
+            threshold = 1e-5
+        if i > offset:
+            deviation = signal[i - offset] - median_est
+            if abs(deviation) > threshold:
+                mask[i - offset] = 1
+        # обновление статистик: выброс тянет оценку только до границы порога
+        threshold = robust_sigma_coef * sigma
+        if threshold < 1e-5:
+            threshold = 1e-5
+        x = signal[i]
+        deviation = x - median_est
+        if abs(deviation) > threshold:
+            clipped_val = median_est + np.sign(deviation) * threshold
+            median_est = alpha * clipped_val + (1 - alpha) * median_est
+            input_for_mad_ema = threshold
+        else:
+            median_est = alpha * x + (1 - alpha) * median_est
+            input_for_mad_ema = abs(deviation)
+        mad_est = alpha * input_for_mad_ema + (1 - alpha) * mad_est
+    median_array[k] = median_est
+    mad_array[k] = mad_est
+    return median_array, mad_array
+
+
 class SquareNoises(Module):
 
     def __init__(self):

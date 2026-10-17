@@ -9,9 +9,8 @@
     9    FourierAlign           Фурье-подавление НЧ-помех только в [15:30]                              30 → 30
     11   ThresholdNormalize     замена битых каналов по карте шага 1, σ по «чистой» половине, нормировка 30 → 30
 
-Точность: стандартизированный сигнал шагов 2–6 — float32 (с ним работают аугментации), шаги 7–11 — float64,
-выход шага 11 — float32. Пороги Кузьмина целочисленные (σ квантуется с шагом 1/3 ед. АЦП), и округления
-float32 перед `int()` сдвигают уровень на ступень — поэтому между шагами 7 и 11 точность не понижается.
+Точность: все шаги — float32. Гистограмма порогов Кузьмина округляет отсчёты до целого, поэтому ошибки
+округления float32 (37 → 36.99998) уровень порога не сдвигают.
 
 Все шаги одного конвейера разделяют объект `EddyContext`: шаг 1 записывает в него опорные статистики
 (mean, σ_опорн, маску битых каналов, карту замен), шаги 7, 8, 11 их читают, шаг 11 очищает. Состояние
@@ -135,7 +134,7 @@ class ICASuppression(Module):
     def forward(self, signals, bboxes, labels):
         _check_channels(signals, N_CHANNELS, "ICASuppression")
         ref = self.context.require("ICASuppression")
-        return _to_tensor(ica_suppress(signals.detach().cpu().numpy(), ref.bad), np.float64), bboxes, labels
+        return _to_tensor(ica_suppress(signals.detach().cpu().numpy(), ref.bad)), bboxes, labels
 
 
 class Destandardize(Module):
@@ -159,7 +158,7 @@ class FourierAlign(Module):
     def forward(self, signals, bboxes, labels):
         _check_channels(signals, 2 * N_CHANNELS, "FourierAlign")
         out = signals.clone()
-        out[N_CHANNELS:] = _to_tensor(fourier_align(signals[N_CHANNELS:].detach().cpu().numpy()), np.float64)
+        out[N_CHANNELS:] = _to_tensor(fourier_align(signals[N_CHANNELS:].detach().cpu().numpy()))
         return out, bboxes, labels
 
 

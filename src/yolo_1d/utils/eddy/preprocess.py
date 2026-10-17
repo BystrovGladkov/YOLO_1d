@@ -19,8 +19,8 @@
   обеих половин на σ.
 
 `preprocess(raw)` — те же шаги без аугментаций (= валидационный конвейер, побитно), эталон для тестов.
-Точность как в конвейере: шаг 2 — float32, шаги 7–11 — float64 (пороги целочисленные, σ квантуется с
-шагом 1/3, и округления float32 сдвигают уровень порога на ступень).
+Все шаги — во float32, как в конвейере (гистограмма порогов округляет отсчёты, поэтому ошибки float32
+порогов не сдвигают).
 `prepare_signal` — исходный алгоритм `EC_preprocess/preprare.py` (ICA по всем каналам, битость по
 выровненному сигналу); оставлен для сравнения, в конвейере не используется.
 
@@ -98,7 +98,7 @@ def prepare_signal(data: np.ndarray) -> Signal:
 def _thresholds(data: np.ndarray):
     """Четыре набора порогов `Get_Signal_Thresholds` для (15, L)."""
     t1, t2, c1, c2 = [], [], [], []
-    Get_Signal_Thresholds(np.asarray(data, dtype=np.float64).T, t1, t2, c1, c2)
+    Get_Signal_Thresholds(np.asarray(data).T, t1, t2, c1, c2)
     return t1, t2, c1, c2
 
 
@@ -127,7 +127,7 @@ def ica_good(data: np.ndarray, bad: np.ndarray) -> np.ndarray:
 
     Если исправных каналов меньше `ICA_COMPONENTS`, ICA пропускается (предупреждение) — возвращается копия.
     """
-    data = np.asarray(data, dtype=np.float64)
+    data = np.asarray(data, dtype=np.float32)
     good = ~np.asarray(bad, dtype=bool)
     out = data.copy()
     if good.sum() < ICA_COMPONENTS:
@@ -139,8 +139,8 @@ def ica_good(data: np.ndarray, bad: np.ndarray) -> np.ndarray:
 
 def fourier_align(data: np.ndarray) -> np.ndarray:
     """Вычитание низкочастотных гармоник (ниже `convert_freq(FOURIER_FREQ, L)`) по каждому каналу."""
-    data = np.asarray(data, dtype=np.float64)
-    return data - fftine_fast(data, convert_freq(FOURIER_FREQ, data.shape[1]))
+    data = np.asarray(data, dtype=np.float32)
+    return data - fftine_fast(data, convert_freq(FOURIER_FREQ, data.shape[1])).astype(np.float32)
 
 
 def corrected_sigma(aligned: np.ndarray, substitute: List[int]) -> Tuple[np.ndarray, List[int]]:
@@ -149,7 +149,7 @@ def corrected_sigma(aligned: np.ndarray, substitute: List[int]) -> Tuple[np.ndar
     Признак битости этого прохода игнорируется. σ ≤ 0 заменяется на 1; возвращает (σ (15,), такие каналы).
     """
     _, _, c1, _ = _thresholds(aligned)
-    sigma = np.array([min(abs(t.thplus), abs(t.thmins)) for t in c1], dtype=np.float64) / 3
+    sigma = np.array([min(abs(t.thplus), abs(t.thmins)) for t in c1], dtype=np.float32) / 3
     for line, src in enumerate(substitute):
         if src != line and src != -1:
             sigma[line] = sigma[src]
@@ -176,7 +176,7 @@ class ReferenceStats:
 
 def reference_stats(raw: np.ndarray) -> ReferenceStats:
     """Шаг 1: битость по сырым данным → ICA по исправным + Фурье → σ_опорн по скорректированным порогам."""
-    raw = np.asarray(raw, dtype=np.float64)
+    raw = np.asarray(raw, dtype=np.float32)
     bad, substitute = detect_bad_channels(raw)
     aligned = fourier_align(ica_good(raw, bad))
     sigma, fallback = corrected_sigma(aligned, substitute)
@@ -186,7 +186,7 @@ def reference_stats(raw: np.ndarray) -> ReferenceStats:
 
 def ica_suppress(z: np.ndarray, bad: np.ndarray) -> np.ndarray:
     """Шаг 7: (15, L) → (30, L): `[0:15]` — вход, `[15:30]` — ICA по исправным каналам (битые — копия входа)."""
-    z = np.asarray(z, dtype=np.float64)
+    z = np.asarray(z, dtype=np.float32)
     return np.concatenate([z, ica_good(z, bad)], axis=0)
 
 
@@ -195,7 +195,7 @@ def threshold_normalize(data30: np.ndarray, substitute: List[int]) -> Tuple[np.n
 
     Возвращает (данные (30, L), σ (15,), каналы с σ = 0 → 1).
     """
-    data30 = np.asarray(data30, dtype=np.float64)
+    data30 = np.asarray(data30, dtype=np.float32)
     dirty = substitute_channels(data30[:N_CHANNELS], substitute)
     clean = substitute_channels(data30[N_CHANNELS:], substitute)
     sigma, fallback = corrected_sigma(clean, substitute)
@@ -234,16 +234,14 @@ def preprocess(raw: np.ndarray) -> PreprocessResult:
     raw = np.asarray(raw)
     if raw.ndim != 2 or raw.shape[0] != N_CHANNELS:
         raise ValueError(f"expected array of shape ({N_CHANNELS}, L), got {raw.shape}")
-    raw = raw.astype(np.float64)
+    raw = raw.astype(np.float32)
 
     ref = reference_stats(raw)                                         # шаг 1
-    # шаг 2; float32 — как в конвейере, где стандартизированный сигнал проходит через аугментации
-    z = ((raw - ref.mean[:, None]) / ref.sigma[:, None]).astype(np.float32)
+    z = (raw - ref.mean[:, None]) / ref.sigma[:, None]                 # шаг 2
     x30 = ica_suppress(z, ref.bad)                                     # шаг 7
     x30 = x30 * np.tile(ref.sigma, 2)[:, None] + np.tile(ref.mean, 2)[:, None]   # шаг 8
     x30[N_CHANNELS:] = fourier_align(x30[N_CHANNELS:])                 # шаг 9
     out, sigma, fallback = threshold_normalize(x30, ref.substitute)    # шаг 11
-    out = out.astype(np.float32)
     return PreprocessResult(
         raw=out[:N_CHANNELS], filtered=out[N_CHANNELS:], sigma=sigma, reference=ref,
         substitute=list(ref.substitute), bad_channels=[int(i) for i in np.flatnonzero(ref.bad)],

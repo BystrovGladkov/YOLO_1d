@@ -1,8 +1,10 @@
 """Пороговые уровни шума рельса и замена битых каналов (алгоритм Кузьмина и др., МАИС 2017, 2018, 2021).
 
-Перенесено из `EC_preprocess/kuzmin_levels.py` без изменения логики. Единственное отличие —
-`Get_Signal_Thresholds` вызывает векторизованную `Get_Probability_Distribution_Fast` (результат
-совпадает с `Get_Probability_Distribution` побитно, см. tests/test_eddy_preprocess.py).
+Перенесено из `EC_preprocess/kuzmin_levels.py`. Отличие от оригинала — `Get_Probability_Distribution`:
+векторизована и **округляет** отсчёты до ближайшего целого вместо `int(x)` (отбрасывания дробной части).
+Для целых отсчётов АЦП результат тот же; для нецелых (после ICA, аугментаций, в float32) ячейка 0
+перестаёт быть вдвое шире остальных (что согласуется с `A[0] / 2` в `Get_Sigma`), а ошибка округления
+float32 (37 → 36.99998) больше не сдвигает отсчёт в соседнюю ячейку и порог — на ступень.
 """
 from typing import List
 import numpy as np
@@ -16,34 +18,11 @@ class ClassThreshold(object):  # объявление класса порого�
 
 
 def Get_Probability_Distribution(EC, Aplus, Amins, n, j):
-    maxplus = 0
-    maxmins = 0
-    totalplus = 0
-    totalmins = 0
-    for i in range(0, len(EC)):
-        x = int(EC[i, j])
-        if abs(x) <= n:
-            if x >= 0:
-                Aplus[x] += 1
-                totalplus += 1
-                if maxplus < x:
-                    maxplus = x
-            if x <= 0:
-                x = abs(x)
-                Amins[x] += 1
-                totalmins += 1
-                if maxmins < x:
-                    maxmins = x
+    """Гистограммы |x| положительных и отрицательных отсчётов канала j (x округляется до целого).
 
-    return maxplus, maxmins, totalplus, totalmins
-
-def Get_Probability_Distribution_Fast(EC, Aplus, Amins, n, j):
-    """Векторизованный аналог `Get_Probability_Distribution` с тем же результатом.
-
-    `int(x)` отбрасывает дробную часть (округление к нулю) — так же делает `np.trunc`.
-    Нулевые отсчёты учитываются в обеих гистограммах, как в исходной функции.
+    Нулевые отсчёты учитываются в обеих гистограммах, как в оригинале.
     """
-    x = np.trunc(np.asarray(EC[:, j], dtype=np.float64)).astype(np.int64)
+    x = np.rint(EC[:, j]).astype(np.int64)
     x = x[np.abs(x) <= n]
     plus = x[x >= 0]
     mins = -x[x <= 0]
@@ -113,7 +92,7 @@ def Get_Signal_Thresholds(
         # ------- вычисление распределения частот -------
         Aplus = np.zeros(n + 1)
         Amins = np.zeros(n + 1)
-        maxplus, maxmins, totalplus, totalmins = Get_Probability_Distribution_Fast(EC, Aplus, Amins, n, j)
+        maxplus, maxmins, totalplus, totalmins = Get_Probability_Distribution(EC, Aplus, Amins, n, j)
         # 
         # ======= вычисление распределения частот =======
         # ------- вычисление sigma -------

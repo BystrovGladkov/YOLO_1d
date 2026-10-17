@@ -13,7 +13,10 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 from yolo_1d.utils.eddy import preprocess, substitute_channels  # noqa: E402
 from yolo_1d.utils.eddy.kuzmin_levels import (Get_Probability_Distribution,  # noqa: E402
-                                              Get_Probability_Distribution_Fast, find_closest, ClassThreshold)
+                                              find_closest, ClassThreshold)
+import importlib  # noqa: E402
+
+pp = importlib.import_module("yolo_1d.utils.eddy.preprocess")   # атрибут пакета `preprocess` — функция
 
 ECR_TRAIN = Path(r"E:\rails\public_dataset\dataset\train\data")
 
@@ -30,21 +33,23 @@ def synthetic(length=6000, seed=0, dead=()):
     return x
 
 
+def test_distribution_rounds_to_nearest():
+    ec = np.array([[0.0], [0.4], [-0.4], [0.6], [-0.7], [36.99998], [37.00002], [-2.5], [5000.0]])
+    n = 64
+    a, m = np.zeros(n + 1), np.zeros(n + 1)
+    maxplus, maxmins, totalplus, totalmins = Get_Probability_Distribution(ec, a, m, n, 0)
+    # 0, 0.4, −0.4 → 0 (в обеих гистограммах); 0.6 → 1; −0.7 → −1; 36.99998, 37.00002 → 37; −2.5 → −2; 5000 > n
+    assert a[0] == 3 and m[0] == 3 and a[1] == 1 and m[1] == 1 and a[37] == 2 and m[2] == 1
+    assert (maxplus, maxmins, totalplus, totalmins) == (37, 2, 6, 5)
+
+
 @pytest.mark.parametrize("seed", [0, 1, 2])
-def test_fast_distribution_matches_original(seed):
-    rng = np.random.default_rng(seed)
-    ec = rng.normal(0, 300, size=(5000, 3))          # дробные, отрицательные, выходящие за n
-    ec[::7, 1] = 0.0
-    ec[::11, 2] = -0.7                                # int(-0.7) == 0
-    n = 1024
-    for j in range(ec.shape[1]):
-        a1, m1 = np.zeros(n + 1), np.zeros(n + 1)
-        a2, m2 = np.zeros(n + 1), np.zeros(n + 1)
-        r1 = Get_Probability_Distribution(ec, a1, m1, n, j)
-        r2 = Get_Probability_Distribution_Fast(ec, a2, m2, n, j)
-        assert r1 == r2
-        np.testing.assert_array_equal(a1, a2)
-        np.testing.assert_array_equal(m1, m2)
+def test_thresholds_robust_to_float32_rounding(seed):
+    """Целочисленный сигнал и он же с ошибкой порядка float32 (×σ + mean) дают одинаковые пороги."""
+    x = synthetic(seed=seed).astype(np.float64)
+    eps = np.random.default_rng(seed).uniform(-1e-3, 1e-3, size=x.shape)
+    for p, q in zip(pp._thresholds(x), pp._thresholds((x + eps).astype(np.float32))):
+        assert [(t.thplus, t.thmins, t.badchl) for t in p] == [(t.thplus, t.thmins, t.badchl) for t in q]
 
 
 def test_substitute_channels():
