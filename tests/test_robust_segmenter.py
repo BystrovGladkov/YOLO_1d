@@ -1,4 +1,4 @@
-"""OnlineRobustSegmenter на numba (`_robust_segment`) совпадает с прежней Python-версией побитно."""
+"""Numba-версии OnlineRobustSegmenter (`_robust_segment`) и морфологии маски (`close_opening`) совпадают с прежними побитно."""
 import sys
 from pathlib import Path
 
@@ -80,3 +80,66 @@ def test_ica_filtration_unchanged(monkeypatch):
     monkeypatch.setattr(sq.OnlineRobustSegmenter, "process_signal", reference_process_signal)
     old = sq.ICA_filtration(data, median=True, EMA=True, method="hyvarinen")
     np.testing.assert_array_equal(new, old)
+
+
+# ------------------------------------------------------------------ морфология маски (close_opening)
+
+def reference_close_opening(rez, close_window, open_window):
+    """Прежняя реализация `close_opening` (scipy.ndimage.convolve1d) — эталон."""
+    from scipy.ndimage import convolve1d
+    window = np.ones(close_window, dtype=np.uint8)
+    rez = convolve1d(rez.astype(np.uint8), window, axis=1, mode="nearest") >= 1
+    rez = convolve1d(rez.astype(np.uint8), window, axis=1, mode="nearest") >= close_window
+    window = np.ones(open_window, dtype=np.uint8)
+    rez = convolve1d(rez.astype(np.uint8), window, axis=1, mode="nearest") >= open_window
+    rez = convolve1d(rez.astype(np.uint8), window, axis=1, mode="nearest") >= 1
+    return rez
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+@pytest.mark.parametrize("close_w,open_w", [(120, 70), (13, 2), (1, 1), (2, 5), (255, 254), (300, 400)])
+def test_close_opening_matches_scipy(seed, close_w, open_w):
+    rng = np.random.default_rng(seed)
+    n = 200 if close_w >= 255 else 5000                     # окна шире сигнала — проверка краёв
+    rez = rng.random((5, n)) < rng.uniform(0.02, 0.6)
+    rez[:, :3] = True                                       # единицы у краёв (mode="nearest")
+    rez[1] = False
+    rez[2] = True
+    out = sq.close_opening(rez, close_w, open_w)
+    assert out.dtype == np.bool_ and out.shape == rez.shape
+    if max(close_w, open_w) <= 255:                         # шире 255 прежняя версия переполняла uint8
+        np.testing.assert_array_equal(out, reference_close_opening(rez, close_w, open_w))
+
+
+def test_ica_filtration_unchanged_with_scipy_morphology(monkeypatch):
+    rng = np.random.default_rng(7)
+    data = rng.normal(0, 1, (15, 8000)).astype(np.float32)
+    data[:, 3000:3900] += np.where(np.arange(900) % 90 < 45, 5.0, -5.0)[None, :] * rng.uniform(0.5, 1.5, (15, 1))
+    new = sq.ICA_filtration(data, median=True, EMA=True, method="hyvarinen")
+    monkeypatch.setattr(sq, "close_opening", reference_close_opening)
+    monkeypatch.setattr(sq.OnlineRobustSegmenter, "process_signal", reference_process_signal)
+    old = sq.ICA_filtration(data, median=True, EMA=True, method="hyvarinen")
+    np.testing.assert_array_equal(new, old)
+
+
+# ------------------------------------------------------------------ критерий остановки FastICA
+
+def test_ica_max_iter_as_production(monkeypatch):
+    """max_iter = 100 (как в C++) передаётся в FastICA; на сходящемся сигнале результат как при 200."""
+    seen = []
+    orig = sq.FastICA
+
+    class Spy(orig):
+        def fit_transform(self, X, y=None):
+            r = super().fit_transform(X)
+            seen.append((self.max_iter, self.tol, self.n_iter_))
+            return r
+
+    monkeypatch.setattr(sq, "FastICA", Spy)
+    rng = np.random.default_rng(3)
+    data = rng.normal(0, 1, (15, 6000)).astype(np.float32)
+    data[:, 1000:1800] += np.where(np.arange(800) % 100 < 50, 5.0, -5.0)[None, :] * rng.uniform(0.5, 1.5, (15, 1))
+    out100 = sq.ICA_filtration(data, median=True, EMA=True, method="hyvarinen")
+    out200 = sq.ICA_filtration(data, median=True, EMA=True, method="hyvarinen", max_iter=200)
+    assert seen[0][:2] == (100, 0.01) and seen[1][0] == 200 and seen[0][2] < 100
+    np.testing.assert_array_equal(out100, out200)

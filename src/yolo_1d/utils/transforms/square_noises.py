@@ -3,7 +3,6 @@ from scipy import signal
 from scipy.stats import expon
 from numpy.fft import rfft, irfft, rfftfreq
 from scipy.stats import median_abs_deviation as mad
-from scipy.ndimage import convolve1d
 from numba import njit
 from sklearn.decomposition import FastICA
 from typing import Tuple
@@ -161,7 +160,7 @@ def new_smooth_noise(N = 50000, dt = 1):
     return x, z, x_smooth
 
 
-def ICA_filtration(data, median = False, EMA = False, method = 'cube', tol = 0.01,
+def ICA_filtration(data, median = False, EMA = False, method = 'cube', tol = 0.01, max_iter = 100,
                    w_1_length = 15, w_2_length = 80, threshold1 = 0.03227, threshold2 = 0.04741,
                    close_w_length = 120, open_w_length = 70, percent_error = 0.14008,
                    threshold1_cor = 0.066134, threshold2_cor = 0.09577, median_w_size = 13,
@@ -171,11 +170,12 @@ def ICA_filtration(data, median = False, EMA = False, method = 'cube', tol = 0.0
     
     :param data: Дефектограмма
     :param median: Требуется ли медианная фильтрация?
+    :param tol, max_iter: критерий остановки FastICA — как в продакшен-реализации на C++ (0.01 и 100)
     '''
     if method == "hyvarinen":
-        ica = FastICA(n_components=5, whiten="unit-variance", whiten_solver="svd", tol=tol, fun=havierian, random_state=55)
+        ica = FastICA(n_components=5, whiten="unit-variance", whiten_solver="svd", tol=tol, max_iter=max_iter, fun=havierian, random_state=55)
     else:
-        ica = FastICA(n_components=5, whiten="unit-variance", whiten_solver="svd", tol=tol, fun=method, random_state=55)
+        ica = FastICA(n_components=5, whiten="unit-variance", whiten_solver="svd", tol=tol, max_iter=max_iter, fun=method, random_state=55)
     
     signals = ica.fit_transform(data.T).T
     residual = data - ica.inverse_transform(signals.T).T
@@ -281,20 +281,43 @@ def bad_data_morphology(small_window, big_window, small_window_threshold, big_wi
     return close_opening(rez, close_window, open_window)
 
 def close_opening(rez: np.array, close_window, open_window):
-    window = np.ones(close_window, dtype=np.uint8)
-    # close
-    # dilation
-    rez = convolve1d(rez.astype(np.uint8), window, axis=1, mode="nearest") >= 1
-    # erosion
-    rez = convolve1d(rez.astype(np.uint8), window, axis=1, mode="nearest") >= close_window
-    # open
-    window = np.ones(open_window, dtype=np.uint8)
-    # erosion
-    rez = convolve1d(rez.astype(np.uint8), window, axis=1, mode="nearest") >= open_window
-    # dilation
-    rez = convolve1d(rez.astype(np.uint8), window, axis=1, mode="nearest") >= 1
+    """Морфологическое закрытие (окно close_window), затем открытие (окно open_window) бинарной маски по оси 1.
 
+    Эквивалентно прежней реализации на `scipy.ndimage.convolve1d(..., mode="nearest")` с окном из единиц
+    (побитно, tests/test_robust_segmenter.py): дилатация — «в окне есть единица», эрозия — «в окне все единицы».
+    """
+    rez = np.ascontiguousarray(rez, dtype=np.bool_)
+    # close
+    rez = _window_count_ge(rez, close_window, 1)                # dilation
+    rez = _window_count_ge(rez, close_window, close_window)     # erosion
+    # open
+    rez = _window_count_ge(rez, open_window, open_window)       # erosion
+    rez = _window_count_ge(rez, open_window, 1)                 # dilation
     return rez
+
+
+@njit(cache=True)
+def _window_count_ge(mask, window, threshold):
+    """out[r, i] = (число единиц mask[r] в окне [i − (window − 1) // 2, i + window // 2]) >= threshold.
+
+    Окно — как у `convolve1d` с ядром из `window` единиц; за краями сигнал продолжается крайним значением
+    (mode="nearest"). Скользящая сумма — O(n) на строку.
+    """
+    rows, n = mask.shape
+    out = np.empty((rows, n), dtype=np.bool_)
+    left = (window - 1) // 2
+    right = window // 2
+    for r in range(rows):
+        count = 0
+        for k in range(-left, right + 1):
+            count += mask[r, min(max(k, 0), n - 1)]
+        out[r, 0] = count >= threshold
+        for i in range(1, n):
+            count += mask[r, min(i + right, n - 1)]
+            count -= mask[r, max(i - 1 - left, 0)]
+            out[r, i] = count >= threshold
+    return out
+
 
 def exponential_median_filter(signal: np.ndarray, mask: np.ndarray, window_size: int, sigma_coef = 2, robust_sigma = 2):
     exp_median_filter = OnlineRobustSegmenter(window_size=window_size, sigma_coef=sigma_coef, robust_sogma_coef=robust_sigma)
