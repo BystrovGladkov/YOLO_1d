@@ -1,0 +1,205 @@
+"""Предобработка вихретоковых дефектограмм как трансформы конвейера (SPEC п. 3; TASKS.md, D4).
+
+Шаги таблицы конвейера, реализованные здесь (аугментации вставляются между ними в D6):
+
+    1–2  ReferenceStandardize   опорные статистики (битость по сырым данным, ICA по исправным + Фурье,
+                                σ_опорн по CorrectedThreshold1) и стандартизация (x − mean) / σ_опорн   15 → 15
+    7    ICASuppression         ICA по исправным каналам: [0:15] вход, [15:30] — «чистые»               15 → 30
+    8    Destandardize          × σ_опорн + mean (обе половины)                                         30 → 30
+    9    FourierAlign           Фурье-подавление НЧ-помех только в [15:30]                              30 → 30
+    11   ThresholdNormalize     замена битых каналов по карте шага 1, σ по «чистой» половине, нормировка 30 → 30
+
+Точность: стандартизированный сигнал шагов 2–6 — float32 (с ним работают аугментации), шаги 7–11 — float64,
+выход шага 11 — float32. Пороги Кузьмина целочисленные (σ квантуется с шагом 1/3 ед. АЦП), и округления
+float32 перед `int()` сдвигают уровень на ступень — поэтому между шагами 7 и 11 точность не понижается.
+
+Все шаги одного конвейера разделяют объект `EddyContext`: шаг 1 записывает в него опорные статистики
+(mean, σ_опорн, маску битых каналов, карту замен), шаги 7, 8, 11 их читают, шаг 11 очищает. Состояние
+живёт в экземпляре конвейера, а не глобально: у каждого воркера DataLoader своя копия трансформа, примеры
+внутри воркера обрабатываются последовательно (в т.ч. второй пример mix-up), поэтому это безопасно.
+
+Опорные статистики детерминированы по исходному сигналу и кэшируются на диск (`ReferenceCache`): ключ —
+хэш содержимого сигнала и версии алгоритма, поэтому имя файла через интерфейс трансформа передавать не
+нужно. Mosaic-склейки длиннее `max_length` в кэш не пишутся (их комбинаций слишком много).
+"""
+import hashlib
+import os
+import tempfile
+from typing import List, Optional, Tuple
+
+import numpy as np
+import torch
+from torch.nn import Module
+
+from yolo_1d.utils.eddy.preprocess import (N_CHANNELS, PREPROCESS_VERSION, ReferenceStats, fourier_align,
+                                           ica_suppress, reference_stats, threshold_normalize)
+
+
+class EddyContext:
+    """Состояние одного примера между шагами предобработки (см. docstring модуля)."""
+
+    def __init__(self):
+        self.ref: Optional[ReferenceStats] = None
+
+    def require(self, step: str) -> ReferenceStats:
+        if self.ref is None:
+            raise RuntimeError(f"{step}: нет опорных статистик — в конвейере перед ним должен быть ReferenceStandardize")
+        return self.ref
+
+
+class ReferenceCache:
+    """Дисковый кэш опорных статистик шага 1: один `.npz` на сигнал в `<root>/reference/`.
+
+    Ключ — BLAKE2b от версии алгоритма, формы и байтов сигнала (float32). Запись атомарная (временный
+    файл + `os.replace`), поэтому несколько воркеров могут писать одновременно.
+    """
+
+    def __init__(self, root: str, max_length: Optional[int] = 50000):
+        self.dir = os.path.join(str(root), "reference")
+        self.max_length = max_length
+
+    @staticmethod
+    def key(raw: np.ndarray) -> str:
+        raw = np.ascontiguousarray(raw, dtype=np.float32)
+        h = hashlib.blake2b(digest_size=20)
+        h.update(PREPROCESS_VERSION.encode())
+        h.update(str(raw.shape).encode())
+        h.update(raw.tobytes())
+        return h.hexdigest()
+
+    def _path(self, key: str) -> str:
+        return os.path.join(self.dir, key[:2], key + ".npz")
+
+    def get(self, raw: np.ndarray) -> Optional[ReferenceStats]:
+        path = self._path(self.key(raw))
+        if not os.path.exists(path):
+            return None
+        with np.load(path) as z:
+            return ReferenceStats(mean=z["mean"], sigma=z["sigma"], bad=z["bad"].astype(bool),
+                                  substitute=[int(s) for s in z["substitute"]],
+                                  sigma_fallback=[int(s) for s in z["sigma_fallback"]])
+
+    def put(self, raw: np.ndarray, ref: ReferenceStats) -> None:
+        if self.max_length is not None and raw.shape[-1] > self.max_length:
+            return
+        path = self._path(self.key(raw))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp")
+        with os.fdopen(fd, "wb") as f:
+            np.savez(f, mean=ref.mean, sigma=ref.sigma, bad=ref.bad,
+                     substitute=np.asarray(ref.substitute, dtype=np.int64),
+                     sigma_fallback=np.asarray(ref.sigma_fallback, dtype=np.int64))
+        os.replace(tmp, path)
+
+    def __call__(self, raw: np.ndarray) -> ReferenceStats:
+        ref = self.get(raw)
+        if ref is None:
+            ref = reference_stats(raw)
+            self.put(raw, ref)
+        return ref
+
+
+def _check_channels(signals: torch.Tensor, n: int, step: str) -> None:
+    if signals.dim() != 2 or signals.shape[0] != n:
+        raise ValueError(f"{step}: ожидался сигнал ({n}, L), получен {tuple(signals.shape)}")
+
+
+def _to_tensor(x: np.ndarray, dtype=np.float32) -> torch.Tensor:
+    return torch.from_numpy(np.ascontiguousarray(x, dtype=dtype))
+
+
+class ReferenceStandardize(Module):
+    """Шаги 1–2: опорные статистики по исходному сигналу (15, L) и стандартизация (x − mean) / σ_опорн."""
+
+    def __init__(self, context: EddyContext, cache: Optional[ReferenceCache] = None):
+        super().__init__()
+        self.context = context
+        self.cache = cache
+
+    def forward(self, signals, bboxes, labels):
+        _check_channels(signals, N_CHANNELS, "ReferenceStandardize")
+        raw = signals.detach().cpu().numpy().astype(np.float32)
+        ref = self.cache(raw) if self.cache is not None else reference_stats(raw)
+        self.context.ref = ref
+        z = (raw - ref.mean[:, None]) / ref.sigma[:, None]
+        return _to_tensor(z), bboxes, labels
+
+
+class ICASuppression(Module):
+    """Шаг 7: 15 → 30 каналов; ICA только по исправным каналам (маска шага 1), битые — копия входа."""
+
+    def __init__(self, context: EddyContext):
+        super().__init__()
+        self.context = context
+
+    def forward(self, signals, bboxes, labels):
+        _check_channels(signals, N_CHANNELS, "ICASuppression")
+        ref = self.context.require("ICASuppression")
+        return _to_tensor(ica_suppress(signals.detach().cpu().numpy(), ref.bad), np.float64), bboxes, labels
+
+
+class Destandardize(Module):
+    """Шаг 8: обратно в единицы АЦП для обеих половин: × σ_опорн + mean."""
+
+    def __init__(self, context: EddyContext):
+        super().__init__()
+        self.context = context
+
+    def forward(self, signals, bboxes, labels):
+        _check_channels(signals, 2 * N_CHANNELS, "Destandardize")
+        ref = self.context.require("Destandardize")
+        sigma = torch.from_numpy(np.tile(ref.sigma, 2)).to(signals.dtype)[:, None]
+        mean = torch.from_numpy(np.tile(ref.mean, 2)).to(signals.dtype)[:, None]
+        return signals * sigma + mean, bboxes, labels
+
+
+class FourierAlign(Module):
+    """Шаг 9: вычитание НЧ-гармоник (`fourier_align`) только в «чистой» половине [15:30]."""
+
+    def forward(self, signals, bboxes, labels):
+        _check_channels(signals, 2 * N_CHANNELS, "FourierAlign")
+        out = signals.clone()
+        out[N_CHANNELS:] = _to_tensor(fourier_align(signals[N_CHANNELS:].detach().cpu().numpy()), np.float64)
+        return out, bboxes, labels
+
+
+class ThresholdNormalize(Module):
+    """Шаг 11: замена битых каналов по карте шага 1 (обе половины), σ по «чистой» половине, нормировка.
+
+    После шага контекст очищается: следующий пример обязан снова пройти `ReferenceStandardize`.
+    """
+
+    def __init__(self, context: EddyContext):
+        super().__init__()
+        self.context = context
+
+    def forward(self, signals, bboxes, labels):
+        _check_channels(signals, 2 * N_CHANNELS, "ThresholdNormalize")
+        ref = self.context.require("ThresholdNormalize")
+        out, _, _ = threshold_normalize(signals.detach().cpu().numpy(), ref.substitute)
+        self.context.ref = None
+        return _to_tensor(out), bboxes, labels
+
+
+class EddyPreprocessing:
+    """Набор шагов предобработки с общим контекстом и (необязательным) кэшем опорных статистик.
+
+    Пример (валидация, без аугментаций):
+        pre = EddyPreprocessing(cache_dir="data/cache")
+        ops = pre.validation_ops() + [Padding(regular_length), Resize(input_length)]
+    В D6 обучающий конвейер собирается из `pre.reference`, `pre.ica`, `pre.destandardize`, `pre.fourier`,
+    `pre.normalize` с аугментациями между ними.
+    """
+
+    def __init__(self, cache_dir: Optional[str] = None, cache_max_length: Optional[int] = 50000):
+        self.context = EddyContext()
+        cache = ReferenceCache(cache_dir, cache_max_length) if cache_dir else None
+        self.reference = ReferenceStandardize(self.context, cache)
+        self.ica = ICASuppression(self.context)
+        self.destandardize = Destandardize(self.context)
+        self.fourier = FourierAlign()
+        self.normalize = ThresholdNormalize(self.context)
+
+    def validation_ops(self) -> List[Module]:
+        """Шаги 1–2, 7, 8, 9, 11 подряд (без аугментаций)."""
+        return [self.reference, self.ica, self.destandardize, self.fourier, self.normalize]
