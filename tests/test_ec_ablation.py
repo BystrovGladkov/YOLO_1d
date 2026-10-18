@@ -35,14 +35,14 @@ def test_cumulative_groups():
 
 def test_configs_are_valid_training_settings(tmp_path):
     paths = r.write_configs(tmp_path)
-    assert [p.stem for p in paths] == [g[0] for g in r.GROUPS] + ["IN_raw", "IN_filtered"]
+    assert [p.stem for p in paths] == [g[0] for g in r.GROUPS] + ["IN_raw", "IN_filtered", "A8_noRev", "A8_noMask"]
     for gid in [g[0] for g in r.GROUPS]:
         cfg = r.load_config(gid, config_dir=tmp_path)
         s = TrainingSettings(**cfg["training"], dataset="x.yaml", seed=1)
         assert s.model_size == "large" and s.batch_size == 50 and s.weight_box == 10 and s.weight_dfl == 3
         assert s.best_metric == "mAP"
         assert s.augmentations.pipeline == "eddy" and s.augmentations.augment_apply_p == 0.5
-        assert cfg["seeds"] == [0, 1, 2] and cfg["dataset"] == "data/ecr_v1.yaml"
+        assert cfg["seeds"] == r.SEEDS == [0] and cfg["dataset"] == "data/ecr_v1.yaml"
     assert r.load_config("A3", config_dir=tmp_path, epochs=2)["training"]["epochs"] == 2
 
 
@@ -168,3 +168,22 @@ def test_noisy_test_transform_deterministic(tmp_path):
     assert list((tmp_path / "noisy_test_s0" / "preprocessed").rglob("*.npy"))
     torch.testing.assert_close(yc, y1, rtol=1e-3, atol=1e-2)
 
+
+
+def test_noisy_test_transform_picklable():
+    """Трансформ зашумлённого test передаётся воркерам DataLoader (spawn) — должен pickle'иться."""
+    import pickle
+    tr = r.noisy_test_transform(AugmentationSettings(**r.ablation_augmentations("A0")), None, noise_seed=3)
+    x = torch.from_numpy(np.random.default_rng(0).normal(0, 100, (15, 6000)).astype(np.float32))
+    a = tr(x.clone(), torch.zeros(0, 2), torch.zeros(0, 1))[0]
+    b = pickle.loads(pickle.dumps(tr))(x.clone(), torch.zeros(0, 2), torch.zeros(0, 1))[0]
+    torch.testing.assert_close(a, b, rtol=0, atol=0)
+
+
+def test_leave_out_configs():
+    a8 = r.make_config("A8")["training"]["augmentations"]
+    no_rev = r.make_config("A8_noRev")["training"]["augmentations"]
+    no_mask = r.make_config("A8_noMask")["training"]["augmentations"]
+    assert no_rev == {**a8, "random_reverse": 0} and a8["random_reverse"] > 0
+    assert no_mask == {**a8, "time_masking": 0, "channel_masking": 0} and a8["time_masking"] > 0
+    assert r.all_config_ids()[-2:] == ["A8_noRev", "A8_noMask"]

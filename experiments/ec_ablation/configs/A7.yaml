@@ -4,8 +4,6 @@ description: 'Кумулятивная абляция: + синусоидаль�
 dataset: data/ecr_v1.yaml
 seeds:
 - 0
-- 1
-- 2
 training:
   names:
   - flashbutt
@@ -16,7 +14,7 @@ training:
   - manual arc
   model_size: large
   batch_size: 50
-  epochs: 300
+  epochs: 50
   enable_amp: true
   early_stopping_epochs: 0
   weight_box: 10

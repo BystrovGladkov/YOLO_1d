@@ -43,6 +43,9 @@ from pathlib import Path
 # друг друга (−10 % скорости). Переменные наследуются воркерами при запуске (spawn).
 for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
     os.environ.setdefault(_var, "1")
+# E3: входы, на которых FastICA не сошлась в NaN/Inf, сохраняются для разбора (пример идёт без подавления)
+os.environ.setdefault("EDDY_ICA_FAILURE_DIR", str(Path(__file__).resolve().parent / "experiments" / "ec_ablation"
+                                                  / "ica_failures"))
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -60,15 +63,16 @@ RUNS_DIR = EXP_DIR / "runs"
 RUNS_BUDGET_DIR = EXP_DIR / "runs_budget"
 BUDGET_DIR = EXP_DIR / "budget"
 DATASET = "data/ecr_v1.yaml"
-SEEDS = [0, 1, 2]
+# один seed (решение пользователя 2026-10-17: срок статьи — неделя); статистика — парный bootstrap по сигналам test
+SEEDS = [0]
 NAMES = ["flashbutt", "aluminothermic", "rail end", "axle counter", "crossing", "manual arc"]
 
-# базовые настройки обучения (start_example.py); epochs уточняется в E1
+# базовые настройки обучения (start_example.py); epochs = 50 — решение пользователя 2026-10-17 (E1b)
 BASE_TRAINING = {
     "names": NAMES,
     "model_size": "large",
     "batch_size": 50,
-    "epochs": 300,
+    "epochs": 50,
     "enable_amp": True,
     # E1b: одинаковый бюджет для всех конфигов, расписание LinearLR доходит до конца — без ранней остановки
     "early_stopping_epochs": 0,
@@ -104,7 +108,19 @@ GROUPS = [
 ]
 INPUT_CONFIGS = [("IN_raw", "raw", "только «грязная» половина (15 каналов)"),
                  ("IN_filtered", "filtered", "только «чистая» половина (15 каналов)")]
+# «A8 без одной группы» (решение пользователя 2026-10-18 по итогам E3): база A8, перечисленные параметры обнуляются
+LEAVE_OUT_CONFIGS = [
+    ("A8_noRev", "A8 без RandomReverse (нереалистичные «обратные» сигналы; падение axle counter на A0→A1)",
+     {"random_reverse": 0}),
+    ("A8_noMask", "A8 без маскирования A5 (TimeMasking, ChannelMasking; единственный отрицательный шаг)",
+     {"time_masking": 0, "channel_masking": 0}),
+]
 METRIC_KEYS = ["mAP", "mAP@50", "Precision", "Recall"]
+
+
+def all_config_ids() -> List[str]:
+    """Все ID конфигов в порядке сводки: A0…A8, IN_*, A8 без групп."""
+    return [g[0] for g in GROUPS] + [c[0] for c in INPUT_CONFIGS] + [c[0] for c in LEAVE_OUT_CONFIGS]
 
 
 # ------------------------------------------------------------------ конфиги
@@ -121,10 +137,15 @@ def ablation_augmentations(group_id: str) -> dict:
 
 
 def make_config(config_id: str, in_base: str = "A8") -> dict:
-    """Полный конфиг A0…A8 или IN_raw / IN_filtered (на базе `in_base`)."""
+    """Полный конфиг A0…A8, IN_raw / IN_filtered (на базе `in_base`) или A8 без группы (`LEAVE_OUT_CONFIGS`)."""
     training = copy.deepcopy(BASE_TRAINING)
     inputs = {c[0]: c for c in INPUT_CONFIGS}
-    if config_id in inputs:
+    leave_out = {c[0]: c for c in LEAVE_OUT_CONFIGS}
+    if config_id in leave_out:
+        _, text, off = leave_out[config_id]
+        training["augmentations"] = {**ablation_augmentations("A8"), **off}
+        description = f"Абляция «без группы»: {text}."
+    elif config_id in inputs:
         _, subset, text = inputs[config_id]
         training["augmentations"] = ablation_augmentations(in_base)
         training["input_subset"] = subset
@@ -139,7 +160,7 @@ def make_config(config_id: str, in_base: str = "A8") -> dict:
 def write_configs(out_dir: Path = CONFIG_DIR, in_base: str = "A8") -> List[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     paths = []
-    for cid in [g[0] for g in GROUPS] + [c[0] for c in INPUT_CONFIGS]:
+    for cid in all_config_ids():
         path = out_dir / f"{cid}.yaml"
         header = "# Сгенерировано: python run_ec_ablation.py make-configs (таблица GROUPS). Правки — в run_ec_ablation.py.\n"
         path.write_text(header + yaml.safe_dump(make_config(cid, in_base), allow_unicode=True, sort_keys=False),
@@ -270,6 +291,29 @@ def run_one(config: dict, seed: int, runs_dir: Optional[Path] = None, rerun: boo
 
 # ------------------------------------------------------------------ E5: test + SquareNoises
 
+class SeededSquareNoises(torch.nn.Module):
+    """SquareNoises (p = 1) с детерминированной помехой: seed — от содержимого сигнала и `noise_seed`.
+
+    Класс модульного уровня — трансформ передаётся в воркеры DataLoader через pickle (spawn на Windows).
+    """
+
+    def __init__(self, noise_seed: int = 0):
+        super().__init__()
+        from yolo_1d.utils.transforms import SquareNoises
+        self.noise_seed = noise_seed
+        self.noise = SquareNoises()
+
+    def forward(self, signals, bboxes, labels):
+        from yolo_1d.utils.transforms import ReferenceCache
+        key = ReferenceCache.key(signals.numpy()) + str(self.noise_seed)
+        state = np.random.get_state()
+        np.random.seed(int(key[:8], 16) ^ self.noise_seed)
+        try:
+            return self.noise(signals, bboxes, labels)
+        finally:
+            np.random.set_state(state)
+
+
 def noisy_test_transform(settings: AugmentationSettings, cache_dir: Optional[str], noise_seed: int = 0,
                          input_subset: str = "all"):
     """Валидационный конвейер с прямоугольной помехой на шаге 6 (p = 1).
@@ -278,26 +322,11 @@ def noisy_test_transform(settings: AugmentationSettings, cache_dir: Optional[str
     Полный результат кэшируется отдельно от чистого test (`<cache>/noisy_test_s<noise_seed>/`).
     """
     from torchvision.transforms.v2 import Compose
-    from yolo_1d.utils.transforms import (EddyPreprocessing, PreprocessedCache, ReferenceCache, SelectChannels,
-                                          SquareNoises)
+    from yolo_1d.utils.transforms import EddyPreprocessing, PreprocessedCache, SelectChannels
     from yolo_1d.utils.transforms.transforms import Padding, Resize
 
-    class SeededSquareNoises(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.noise = SquareNoises()
-
-        def forward(self, signals, bboxes, labels):
-            key = ReferenceCache.key(signals.numpy()) + str(noise_seed)
-            state = np.random.get_state()
-            np.random.seed(int(key[:8], 16) ^ noise_seed)
-            try:
-                return self.noise(signals, bboxes, labels)
-            finally:
-                np.random.set_state(state)
-
     pre = EddyPreprocessing(cache_dir=cache_dir)
-    ops = [pre.reference, SeededSquareNoises(), pre.ica, pre.destandardize, pre.fourier, pre.normalize]
+    ops = [pre.reference, SeededSquareNoises(noise_seed), pre.ica, pre.destandardize, pre.fourier, pre.normalize]
     if cache_dir:
         ops = [PreprocessedCache(ops, str(Path(cache_dir) / f"noisy_test_s{noise_seed}"))]
     if input_subset != "all":
@@ -372,7 +401,7 @@ def collect(runs_dir: Path = RUNS_DIR) -> List[dict]:
 
 
 def _order(config: str) -> tuple:
-    ids = [g[0] for g in GROUPS] + [c[0] for c in INPUT_CONFIGS]
+    ids = all_config_ids()
     return (ids.index(config) if config in ids else len(ids), config)
 
 

@@ -27,6 +27,8 @@
 ICA — `ICA_filtration(median=True, EMA=True, method='hyvarinen')` из `transforms/square_noises.py`;
 Фурье-выравнивание — вычитание гармоник ниже `convert_freq(0.03, L)` (Быстров, Гладков, Кузьмин, МАИС 2024).
 """
+import os
+import time
 import warnings
 from dataclasses import dataclass, field
 from typing import List, Tuple
@@ -133,8 +135,27 @@ def ica_good(data: np.ndarray, bad: np.ndarray) -> np.ndarray:
     if good.sum() < ICA_COMPONENTS:
         warnings.warn(f"исправных каналов {int(good.sum())} < {ICA_COMPONENTS}: ICA-подавление пропущено")
         return out
-    out[good] = square_noises.ICA_filtration(data[good], median=True, EMA=True, method='hyvarinen')
+    try:
+        filtered = square_noises.ICA_filtration(data[good], median=True, EMA=True, method='hyvarinen')
+    except (ValueError, np.linalg.LinAlgError) as e:     # E3: на редких обучающих примерах W FastICA → NaN
+        filtered, reason = None, f"{type(e).__name__}: {e}"
+    else:
+        reason = "результат содержит NaN/Inf"
+    if filtered is None or not np.isfinite(filtered).all():
+        _save_ica_failure(data, bad)
+        warnings.warn(f"ICA-подавление не удалось ({reason}): пример оставлен без подавления")
+        return out
+    out[good] = filtered
     return out
+
+
+def _save_ica_failure(data: np.ndarray, bad: np.ndarray) -> None:
+    """Сохраняет вход неудавшейся ICA в каталог `EDDY_ICA_FAILURE_DIR` (если задан) — для разбора."""
+    root = os.environ.get("EDDY_ICA_FAILURE_DIR")
+    if not root:
+        return
+    os.makedirs(root, exist_ok=True)
+    np.savez(os.path.join(root, f"ica_failure_{os.getpid()}_{time.time_ns()}.npz"), data=data, bad=bad)
 
 
 def fourier_align(data: np.ndarray) -> np.ndarray:

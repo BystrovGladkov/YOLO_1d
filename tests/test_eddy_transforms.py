@@ -208,3 +208,22 @@ def test_pickle_keeps_shared_context(tmp_path):
     for op in ops:
         y, b, c = op(y, b, c)
     torch.testing.assert_close(y, run(ep.EddyPreprocessing(), x), rtol=0, atol=0)
+
+
+def test_ica_failure_falls_back_without_suppression(monkeypatch, tmp_path):
+    """FastICA с NaN/исключением (E3, A5) → пример без подавления, предупреждение, вход сохранён для разбора."""
+    x = synthetic().astype(np.float32)
+    bad = np.zeros(15, dtype=bool)
+    monkeypatch.setenv("EDDY_ICA_FAILURE_DIR", str(tmp_path))
+    monkeypatch.setattr(pp.square_noises, "ICA_filtration", lambda d, **kw: np.full_like(d, np.nan))
+    with pytest.warns(UserWarning, match="ICA-подавление не удалось"):
+        out = pp.ica_good(x, bad)
+    np.testing.assert_array_equal(out, x)
+
+    def boom(d, **kw):
+        raise ValueError("array must not contain infs or NaNs")
+    monkeypatch.setattr(pp.square_noises, "ICA_filtration", boom)
+    with pytest.warns(UserWarning, match="ValueError"):
+        out = pp.ica_good(x, bad)
+    np.testing.assert_array_equal(out, x)
+    assert len(list(tmp_path.glob("ica_failure_*.npz"))) == 2
