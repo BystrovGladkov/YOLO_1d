@@ -1,0 +1,45 @@
+name: A8_noRev
+description: 'Абляция «без группы»: A8 без RandomReverse (нереалистичные «обратные»
+  сигналы; падение axle counter на A0→A1).'
+dataset: data/ecr_v1.yaml
+seeds:
+- 0
+training:
+  names:
+  - flashbutt
+  - aluminothermic
+  - rail end
+  - axle counter
+  - crossing
+  - manual arc
+  model_size: large
+  batch_size: 50
+  epochs: 200
+  enable_amp: true
+  early_stopping_epochs: 0
+  weight_box: 10
+  weight_dfl: 3
+  num_workers: 15
+  eval_num_workers: 4
+  best_metric: mAP
+  augmentations:
+    pipeline: eddy
+    regular_length: 50000
+    input_length: 49152
+    validation_resize: true
+    random_resize: 0.1
+    random_crop: true
+    random_reverse: 0
+    phase_spectrum_noise: 0.5
+    random_jitter: 0.6
+    random_invert: 0.5
+    channel_scaling: 0.2
+    time_masking: 0.2
+    channel_masking: 0.2
+    mosaic: 0.5
+    mix_up: 0.5
+    sine_noise: 0.5
+    square_noises: 0.1
+    adversarial: 0
+    augment_apply_p: 0.5
+budget: 200
