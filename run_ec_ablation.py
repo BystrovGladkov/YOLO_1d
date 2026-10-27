@@ -8,6 +8,7 @@
     python run_ec_ablation.py noisy-test A0 A8 --seeds 0 1 2  # E5: оценка на test + SquareNoises
     python run_ec_ablation.py summary                         # summary.csv, summary_agg.csv, summary.md
     python run_ec_ablation.py summary --budget                # сводка пилота: experiments/ec_ablation/budget/
+    python run_ec_ablation.py postprocess-eval A0 A8          # переоценка best.pt с постобработкой (metrics_pp.json)
 
 Конфиги: кумулятивные A0…A8 (таблица `GROUPS`; источник истины — этот файл, yaml генерируются из него) и
 IN_raw / IN_filtered (итоговый набор с подмножеством входных каналов, E6; поле `input_subset` — D8). Каждый
@@ -20,6 +21,8 @@ yaml — полный и явный: `name`, `description`, `dataset`, `seeds`, 
     metrics.json         val/test: mAP@0.5, mAP@0.5:0.95, P, R + AP@0.5, AP@0.5:0.95, P, R по классам
     predictions_test.npz детекции и разметка каждого тестового сигнала (офлайн-bootstrap, R1 §3)
     noisy_test.json      (E5) метрики на test + SquareNoises
+    metrics_pp.json      val / test / test + шум с постобработкой POSTPROCESS (вложенные объекты после NMS);
+                         predictions_test_pp.npz — детекции test после неё
     run.json             чекпоинт, длительность
 Готовый прогон (есть metrics.json) повторно не обучается; незавершённый — продолжается (`resume`); --rerun — заново.
 
@@ -116,6 +119,15 @@ LEAVE_OUT_CONFIGS = [
      {"time_masking": 0, "channel_masking": 0}),
 ]
 METRIC_KEYS = ["mAP", "mAP@50", "Precision", "Recall"]
+# постобработка после NMS (решение пользователя 2026-10-21): главный класс — стрелочный перевод (crossing, 4);
+# вторичные — счётчик осей (3) и стрелочный перевод; вторичный объект удаляется, если > 0.8 его длины лежит внутри
+# главного с не меньшей уверенностью (util.suppress_contained) — дубли стрелочных переводов, пропущенные NMS
+POSTPROCESS = {"contain_main_classes": [4], "contain_secondary_classes": [3, 4], "contain_threshold": 0.8}
+# конфиги, для которых summary.md показывает метрики по классам
+DETAIL_CONFIGS = ["A8", "A8_noRev"]
+# порог уверенности для P / R в сводке (решение пользователя 2026-10-21): один и тот же для всех конфигов и классов,
+# вместо точки максимума среднего F1 из compute_ap (она зависит от всех классов сразу)
+CONF_THRESHOLD = 0.5
 
 
 def all_config_ids() -> List[str]:
@@ -343,17 +355,54 @@ def run_noisy_test(config: dict, seed: int, runs_dir: Optional[Path] = None, noi
         raise FileNotFoundError(f"{run_dir}: прогон не завершён")
     trainer = make_trainer(config, run_dir, seed, resume=True)
     _load_best(trainer)
-    cache = yaml.safe_load((REPO / config["dataset"]).read_text(encoding="utf-8")).get("preprocess_cache")
-    aug = trainer._settings.augmentations
-    transform = noisy_test_transform(aug, cache, noise_seed, trainer._settings.input_subset)
-    dataset = Dataset(str(REPO / config["dataset"]), transform, "test")
-    loader = DataLoader(dataset, trainer._settings.batch_size, shuffle=False, collate_fn=Dataset.collate_fn,
-                        num_workers=trainer._settings.num_workers)
     with torch.no_grad():
-        r, per_class, _ = trainer._evaluate_loader(loader, desc="noisy test")
+        r, per_class, _ = trainer._evaluate_loader(_noisy_loader(trainer, config, noise_seed), desc="noisy test")
     out = {"config": config["name"], "seed": seed, "noise_seed": noise_seed,
            "test_noisy": _metrics(r, per_class, config["training"]["names"])}
     (run_dir / "noisy_test.json").write_text(json.dumps(out, indent=2, ensure_ascii=False), encoding="utf-8")
+    torch.cuda.empty_cache()
+    return run_dir
+
+
+def _noisy_loader(trainer, config: dict, noise_seed: int = 0):
+    """Загрузчик зашумлённой копии test (SquareNoises p = 1 на шаге 6, кэшируется)."""
+    from torch.utils.data import DataLoader
+    from yolo_1d.utils.dataset import Dataset
+    cache = yaml.safe_load((REPO / config["dataset"]).read_text(encoding="utf-8")).get("preprocess_cache")
+    transform = noisy_test_transform(trainer._settings.augmentations, cache, noise_seed, trainer._settings.input_subset)
+    dataset = Dataset(str(REPO / config["dataset"]), transform, "test")
+    return DataLoader(dataset, trainer._settings.batch_size, shuffle=False, collate_fn=Dataset.collate_fn,
+                      num_workers=trainer._settings.num_workers)
+
+
+def run_postprocess_eval(config: dict, seed: int, runs_dir: Optional[Path] = None, noise_seed: int = 0,
+                         postprocess: Optional[dict] = None) -> Path:
+    """Переоценка best.pt готового прогона с постобработкой после NMS → metrics_pp.json.
+
+    Обучение и выбор best.pt не меняются (best.pt выбран по val без постобработки); `metrics.json` не трогается.
+    """
+    postprocess = dict(POSTPROCESS if postprocess is None else postprocess)
+    run_dir = (runs_dir or default_runs_dir(config)) / run_name(config, seed)
+    if not (run_dir / "metrics.json").is_file():
+        raise FileNotFoundError(f"{run_dir}: прогон не завершён")
+    trainer = make_trainer(config, run_dir, seed, resume=True)
+    checkpoint = _load_best(trainer)
+    for key, value in postprocess.items():
+        setattr(trainer._settings, key, value)
+    trainer._init_dataloaders()
+    names = config["training"]["names"]
+    result = {"config": config["name"], "seed": seed, "checkpoint": checkpoint, "postprocess": postprocess,
+              "noise_seed": noise_seed}
+    loaders = {"val": trainer._val_loader, "test": trainer._test_loader,
+               "test_noisy": _noisy_loader(trainer, config, noise_seed)}
+    for split, loader in loaders.items():
+        with torch.no_grad():
+            r, per_class, per_sample = trainer._evaluate_loader(loader, desc=f"{split} pp")
+        result[split] = _metrics(r, per_class, names)
+        if split == "test":
+            ids = [Path(f).stem for f in loader.dataset.filenames]
+            save_predictions(run_dir / "predictions_test_pp.npz", ids, per_sample)
+    (run_dir / "metrics_pp.json").write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
     torch.cuda.empty_cache()
     return run_dir
 
@@ -377,6 +426,40 @@ def training_progress(run_dir: Path) -> dict:
     return out
 
 
+def fixed_conf_metrics(run_dir: Path, predictions: str = "predictions_test.npz",
+                       conf: float = CONF_THRESHOLD) -> Optional[dict]:
+    """P и R (IoU ≥ 0.5) по классам при пороге уверенности `conf` по сохранённым детекциям test.
+
+    Детекции ниже порога отбрасываются до сопоставления с разметкой (`util.compute_metric`, как в Trainer).
+    Возвращает {"P", "R"} — макро-средние по классам разметки, и {"per_class": {name: {"P", "R", "n"}}}.
+    """
+    from yolo_1d.utils import util
+    path = run_dir / predictions
+    config_path = run_dir / "config.yaml"
+    if not path.is_file() or not config_path.is_file():
+        return None
+    w = yaml.safe_load(config_path.read_text(encoding="utf-8"))["training"]["augmentations"]["input_length"]
+    iou = torch.tensor([0.5])
+    tp, n_det, n_gt = np.zeros(len(NAMES)), np.zeros(len(NAMES)), np.zeros(len(NAMES))
+    p = load_predictions(path)
+    for det, cls, box in zip(p["det"], p["cls"], p["box"]):
+        det = torch.as_tensor(np.asarray(det, np.float32).reshape(-1, 4))
+        det = det[det[:, 2] >= conf]
+        cls = torch.as_tensor(np.asarray(cls, np.float32).reshape(-1, 1))
+        box = torch.as_tensor(np.asarray(box, np.float32).reshape(-1, 2))
+        np.add.at(n_gt, cls[:, 0].long().numpy(), 1)
+        np.add.at(n_det, det[:, 3].long().numpy(), 1)
+        if det.shape[0] and cls.shape[0]:
+            hit = util.compute_metric(det[:, :4], torch.cat((cls, util.wh2xy(box) * w), dim=1), iou)[:, 0]
+            np.add.at(tp, det[hit, 3].long().numpy(), 1)
+    present = n_gt > 0
+    prec = np.divide(tp, n_det, out=np.zeros_like(tp), where=n_det > 0)
+    rec = np.divide(tp, n_gt, out=np.zeros_like(tp), where=n_gt > 0)
+    return {"P": float(prec[present].mean()), "R": float(rec[present].mean()),
+            "per_class": {name: {"P": float(prec[k]), "R": float(rec[k]), "n": int(n_gt[k])}
+                          for k, name in enumerate(NAMES)}}
+
+
 def collect(runs_dir: Path = RUNS_DIR) -> List[dict]:
     """Строки по прогонам: конфиг, seed, бюджет, метрики val/test(/test_noisy), AP по классам на test."""
     rows = []
@@ -396,6 +479,17 @@ def collect(runs_dir: Path = RUNS_DIR) -> List[dict]:
         if noisy.is_file():
             n = json.loads(noisy.read_text(encoding="utf-8"))["test_noisy"]
             row.update({f"test_noisy_{k}": n[k] for k in METRIC_KEYS})
+        pp_path = metrics_path.parent / "metrics_pp.json"
+        if pp_path.is_file():
+            pp = json.loads(pp_path.read_text(encoding="utf-8"))
+            for split in ("val", "test", "test_noisy"):
+                row.update({f"pp_{split}_{k}": pp[split][k] for k in METRIC_KEYS})
+            for name, v in pp["test"].get("per_class", {}).items():
+                row[f"pp_test_AP_{name}"] = v["AP"]
+        for prefix, predictions in (("", "predictions_test.npz"), ("pp_", "predictions_test_pp.npz")):
+            fixed = fixed_conf_metrics(metrics_path.parent, predictions)
+            if fixed is not None:
+                row[f"{prefix}test_P_conf"], row[f"{prefix}test_R_conf"] = fixed["P"], fixed["R"]
         rows.append(row)
     return rows
 
@@ -434,18 +528,53 @@ def summarize(runs_dir: Path = RUNS_DIR, out_dir: Path = EXP_DIR) -> List[dict]:
         writer = csv.DictWriter(f, fieldnames=agg_fields)
         writer.writeheader()
         writer.writerows(agg)
-    lines = ["# Абляция аугментаций ECRv1", "", "Test, mean ± SD по seed (mAP — mAP@0.5:0.95, макро по 6 классам).", "",
-             "| конфиг | epochs | seeds | эпоха best.pt | mAP | mAP@50 | P | R | mAP, test + шум |",
-             "|---|---|---|---|---|---|---|---|---|"]
-    fmt = lambda a, k: (f"{100 * a[k + '_mean']:.2f} ± {100 * a[k + '_sd']:.2f}" if k + "_mean" in a else "—")
+    lines = ["# Абляция аугментаций ECRv1", "",
+             f"Test (294 сигнала), seed 0. mAP — mAP@0.5:0.95, макро по 6 классам; P и R — при пороге уверенности "
+             f"{CONF_THRESHOLD} (IoU ≥ 0.5), макро по классам. «С постобработкой» — удаление вложенных объектов после "
+             f"NMS: главный класс стрелочный перевод, вторичные — счётчик осей и стрелочный перевод, порог доли "
+             f"{POSTPROCESS['contain_threshold']}, главный не менее уверен (тот же best.pt).", "",
+             "| конфиг | epochs | эпоха best.pt | mAP | mAP@50 | P | R | mAP, с постобр. | mAP@50, с постобр. "
+             "| P, с постобр. | R, с постобр. |", "|---|---|---|---|---|---|---|---|---|---|---|"]
+    fmt = lambda a, k: f"{100 * a[k + '_mean']:.2f}" if k + "_mean" in a else "—"
     for a in agg:
         best = f"{a['best_epoch_mean']:.0f}" if "best_epoch_mean" in a else "—"
         epochs = a["epochs"] if a["epochs"] is not None else "—"
-        lines.append(f"| {a['config']} | {epochs} | {a['n_seeds']} | {best} | "
-                     f"{fmt(a, 'test_mAP')} | {fmt(a, 'test_mAP@50')} | "
-                     f"{fmt(a, 'test_Precision')} | {fmt(a, 'test_Recall')} | {fmt(a, 'test_noisy_mAP')} |")
+        lines.append(f"| {a['config']} | {epochs} | {best} | {fmt(a, 'test_mAP')} | {fmt(a, 'test_mAP@50')} | "
+                     f"{fmt(a, 'test_P_conf')} | {fmt(a, 'test_R_conf')} | {fmt(a, 'pp_test_mAP')} | "
+                     f"{fmt(a, 'pp_test_mAP@50')} | {fmt(a, 'pp_test_P_conf')} | {fmt(a, 'pp_test_R_conf')} |")
+    lines += _detail_section(runs_dir)
     (out_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return agg
+
+
+def _detail_section(runs_dir: Path) -> List[str]:
+    """Метрики test по классам для DETAIL_CONFIGS, без и с постобработкой (P, R — при CONF_THRESHOLD)."""
+    lines = []
+    for config in DETAIL_CONFIGS:
+        for run_dir in sorted(runs_dir.glob(f"{config}_s*")):
+            if not (run_dir / "metrics.json").is_file():
+                continue
+            sources = [("без постобработки", json.loads((run_dir / "metrics.json").read_text(encoding="utf-8")),
+                        "predictions_test.npz")]
+            if (run_dir / "metrics_pp.json").is_file():
+                sources.append(("с постобработкой", json.loads((run_dir / "metrics_pp.json").read_text(encoding="utf-8")),
+                                "predictions_test_pp.npz"))
+            lines += ["", f"## {run_dir.name}: test по классам", "",
+                      f"P и R — при пороге уверенности {CONF_THRESHOLD}, IoU ≥ 0.5."]
+            for title, src, predictions in sources:
+                fixed = fixed_conf_metrics(run_dir, predictions)
+                if fixed is None or "per_class" not in src["test"]:
+                    continue
+                t = src["test"]
+                lines += ["", f"**{title}**", "", "| класс | объектов | AP@0.5:0.95 | AP@50 | P | R |",
+                          "|---|---|---|---|---|---|"]
+                for name, v in t["per_class"].items():
+                    f = fixed["per_class"][name]
+                    lines.append(f"| {name} | {f['n']} | {v['AP']:.3f} | {v['AP@50']:.3f} | {f['P']:.3f} | {f['R']:.3f} |")
+                n = sum(f["n"] for f in fixed["per_class"].values())
+                lines.append(f"| **среднее** | {n} | **{t['mAP']:.3f}** | **{t['mAP@50']:.3f}** | {fixed['P']:.3f} | "
+                             f"{fixed['R']:.3f} |")
+    return lines
 
 
 # ------------------------------------------------------------------ CLI
@@ -459,7 +588,7 @@ def main(argv=None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("make-configs", help="сгенерировать yaml-конфиги A0…A8, IN_raw, IN_filtered")
     p.add_argument("--in-base", default="A8", help="база аугментаций для IN_raw / IN_filtered (по умолчанию A8)")
-    for name in ("train", "noisy-test"):
+    for name in ("train", "noisy-test", "postprocess-eval"):
         p = sub.add_parser(name)
         p.add_argument("configs", nargs="+", help="ID конфигов (A0 … A8, IN_raw, IN_filtered)")
         p.add_argument("--seeds", type=int, nargs="+", help="переопределить seeds конфига")
@@ -487,6 +616,8 @@ def main(argv=None) -> int:
             print(f"\n===== {cid}, seed {seed} ({args.command}) =====")
             if args.command == "train":
                 run_one(config, seed, rerun=args.rerun)
+            elif args.command == "postprocess-eval":
+                run_postprocess_eval(config, seed, noise_seed=args.noise_seed)
             else:
                 run_noisy_test(config, seed, noise_seed=args.noise_seed)
     if args.epochs is not None:

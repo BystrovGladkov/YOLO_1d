@@ -114,6 +114,43 @@ def compute_metric(output, target, iou_v):
             correct[matches[:, 1].astype(int), i] = True
     return torch.tensor(correct, dtype=torch.bool, device=output.device)
 
+def suppress_contained(output, main_classes, secondary_classes, threshold=0.8):
+    """Постобработка после NMS: удаление вторичных объектов, вложенных в главный.
+
+    Объект вторичного класса удаляется, если доля его длины внутри объекта главного класса больше
+    `threshold`, а уверенность главного объекта не ниже его собственной. Обход — по убыванию уверенности,
+    как в NMS: удалённый объект сам ничего не удаляет; при равной уверенности старшим считается тот,
+    что раньше в выдаче. Если класс и главный, и вторичный (например, стрелочный перевод), из двух
+    вложенных объектов остаётся более уверенный — так убираются дубли, которые NMS по IoU пропускает
+    (у вложенного короткого объекта IoU с длинным мал).
+
+    output: (n, ≥4) [x1, x2, conf, cls, ...] — детекции одного сигнала; возвращается подмножество строк
+    в исходном порядке.
+    """
+    n = output.shape[0]
+    if n == 0 or not main_classes or not secondary_classes:
+        return output
+    order = torch.argsort(output[:, 2], descending=True, stable=True)
+    det = output[order]
+    cls = det[:, 3].long()
+    is_main = torch.isin(cls, torch.as_tensor(list(main_classes), device=det.device))
+    is_secondary = torch.isin(cls, torch.as_tensor(list(secondary_classes), device=det.device))
+    if not is_main.any() or not is_secondary.any():
+        return output
+    x1, x2 = det[:, 0], det[:, 1]
+    inter = (torch.min(x2[:, None], x2[None, :]) - torch.max(x1[:, None], x1[None, :])).clamp(min=0)
+    inside = inter / (x2 - x1).clamp(min=1e-7)[:, None]        # inside[j, i] — доля j внутри i
+    keep = torch.ones(n, dtype=torch.bool, device=det.device)
+    for j in range(1, n):
+        if is_secondary[j]:
+            senior = keep[:j] & is_main[:j]
+            if (inside[j, :j][senior] > threshold).any():
+                keep[j] = False
+    keep_original = torch.zeros(n, dtype=torch.bool, device=det.device)
+    keep_original[order] = keep
+    return output[keep_original]
+
+
 def non_max_suppression(outputs, confidence_threshold=0.001, iou_threshold=0.65):
     max_wh = 50000 # 
     max_det = 300 # Максимальное количество предсказанных bbox

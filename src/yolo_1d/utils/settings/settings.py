@@ -190,6 +190,12 @@ class TrainingSettings(BaseModel):
 
     # evaluation and model selection
     nms_iou: float = Field(0.65, gt=0.0, le=1.0, description="IoU threshold of NMS.")
+    contain_main_classes: List[int] = Field(default_factory=list, description=(
+        "Post-NMS suppression (util.suppress_contained): main classes. Empty — step disabled."))
+    contain_secondary_classes: List[int] = Field(default_factory=list, description=(
+        "Classes removed when > contain_threshold of their length lies inside a main-class object "
+        "with not lower confidence."))
+    contain_threshold: float = Field(0.8, gt=0.0, le=1.0, description="Share of a secondary object inside a main one.")
     delineation_metrics: bool = Field(
         False, description="Compute ECG delineation metrics (Se/PPV/F1, error in ms for 6 fiducials, "
                            "yolo_1d.utils.delineation) on validation each epoch and log them to step.csv.")

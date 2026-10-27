@@ -109,7 +109,7 @@ def test_summary(tmp_path):
     assert a1["test_noisy_mAP_mean"] == pytest.approx(0.3)
     assert (tmp_path / "summary.csv").read_text(encoding="utf-8").startswith("config,seed,")
     md = (tmp_path / "summary.md").read_text(encoding="utf-8")
-    assert "| A1 | — | 2 | — | 50.00 ± 14.14" in md
+    assert "| A1 | — | — | 50.00 | 60.00 |" in md
 
 
 def test_budget_run_names_do_not_collide():
@@ -145,7 +145,7 @@ def test_budget_summary_groups_by_epochs(tmp_path):
     assert [a["n_seeds"] for a in agg] == [1, 1, 1]
     assert agg[2]["test_mAP_mean"] == pytest.approx(0.70) and agg[1]["best_epoch_mean"] == 2
     assert (tmp_path / "summary.csv").read_text(encoding="utf-8").startswith("config,epochs,seed,")
-    assert "| A8 | 100 | 1 | 3 | 70.00 ± 0.00" in (tmp_path / "summary.md").read_text(encoding="utf-8")
+    assert "| A8 | 100 | 3 | 70.00 | 80.00 |" in (tmp_path / "summary.md").read_text(encoding="utf-8")
 
 
 def test_noisy_test_transform_deterministic(tmp_path):
@@ -187,3 +187,21 @@ def test_leave_out_configs():
     assert no_rev == {**a8, "random_reverse": 0} and a8["random_reverse"] > 0
     assert no_mask == {**a8, "time_masking": 0, "channel_masking": 0} and a8["time_masking"] > 0
     assert r.all_config_ids()[-2:] == ["A8_noRev", "A8_noMask"]
+
+
+def test_fixed_conf_metrics(tmp_path):
+    """P / R при пороге уверенности: детекции ниже порога отбрасываются до сопоставления с разметкой."""
+    run = tmp_path / "A8_s0"
+    run.mkdir()
+    (run / "config.yaml").write_text(yaml.safe_dump({"training": {"augmentations": {"input_length": 1000}}}))
+    # сигнал 1: crossing [100, 300] найден (0.9), ложный crossing (0.6), слабый дубль ниже порога (0.3)
+    # сигнал 2: axle counter [500, 520] не найден (детекция 0.4 < 0.5)
+    det = [np.array([[100, 300, 0.9, 4], [600, 700, 0.6, 4], [110, 290, 0.3, 4]]), np.array([[500, 520, 0.4, 3]])]
+    cls = [np.array([4.0]), np.array([3.0])]
+    box = [np.array([[0.2, 0.2]]), np.array([[0.51, 0.02]])]
+    r.save_predictions(run / "predictions_test.npz", ["a", "b"], list(zip(det, cls, box)))
+    m = r.fixed_conf_metrics(run, conf=0.5)
+    assert m["per_class"]["crossing"] == {"P": 0.5, "R": 1.0, "n": 1}
+    assert m["per_class"]["axle counter"] == {"P": 0.0, "R": 0.0, "n": 1}
+    assert m["P"] == pytest.approx(0.25) and m["R"] == pytest.approx(0.5)      # макро по классам разметки
+    assert r.fixed_conf_metrics(run, conf=0.35)["per_class"]["axle counter"]["R"] == 1.0

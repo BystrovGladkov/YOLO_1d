@@ -467,6 +467,11 @@ class Trainer:
                 outputs = model(samples)
             # NMS
             outputs = util.non_max_suppression(outputs, conf_threshold, self._settings.nms_iou)
+            # постобработка: вложенные вторичные объекты (выключена при пустом contain_main_classes)
+            if self._settings.contain_main_classes:
+                outputs = [util.suppress_contained(o, self._settings.contain_main_classes,
+                                                   self._settings.contain_secondary_classes,
+                                                   self._settings.contain_threshold) for o in outputs]
             # Metrics
             for i, output in enumerate(outputs):
                 if row_valid is not None and not row_valid[i]:
