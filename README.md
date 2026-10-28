@@ -17,7 +17,7 @@ All components of this research are openly available for academic and commercial
 | **Source Code** | Core backbone + ECG & Defectogram pipelines | This repository | [Apache 2.0](LICENSE) | *Pending* <!-- No. 20266XXXXXX, No. 20266YYYYYY --> |
 | **Weights (Task 1)** | Pre-trained checkpoint for ECG (LUDB) | [HF Model Hub](https://huggingface.co/[your-username]/[ecg-weights-repo]) | [Apache 2.0](LICENSE) | *Included in SW Reg.* |
 | **Weights (Task 2)** | Pre-trained checkpoint for Defectograms | [HF Model Hub](https://huggingface.co/[your-username]/[defect-weights-repo]) | [Apache 2.0](LICENSE) | *Included in SW Reg.* |
-| **Defectogram Dataset** | New large-scale annotated dataset for Task 2 | [HF Datasets](https://huggingface.co/datasets/[your-username]/[dataset-repo]) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) | *Pending* <!-- No. 202662ZZZZZ --> |
+| **Defectogram Dataset** | New large-scale annotated dataset for Task 2 | [HF Datasets](https://huggingface.co/datasets/Nasochec/ECRv1) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) | *Pending* <!-- No. 202662ZZZZZ --> |
 
 ---
 
@@ -88,14 +88,13 @@ There are no bundled sample files or notebooks; the snippets below are the actua
 | Task | Run folder (contains `args.yaml`) | Put the checkpoint at |
 | :--- | :--- | :--- |
 | ECG, single-lead (E4, fold 0, seed 2) | `experiments/final/fold0_seed2/train1/` | `experiments/final/fold0_seed2/train1/best.pt` |
-| ECG, 12-lead mode (E7) | `experiments/mc_full/fold0_seed2/train1/` | `experiments/mc_full/fold0_seed2/train1/best.pt` |
-| Defectograms, full augmentation set A8 | `experiments/ec_ablation/runs/A8_s0/train1/` | `experiments/ec_ablation/runs/A8_s0/train1/best.pt` |
+| Eddy Current Defectograms, full augmentation set A8 | `experiments/ec_ablation/runs/A8_s0/train1/` | `experiments/ec_ablation/runs/A8_s0/train1/best.pt` |
 
-A checkpoint is a `torch.save`d dict with `model`, `ema` and `epoch`; `Trainer.load_checkpoint()` loads it and `Trainer.predict()` runs the EMA model. `predict()` takes **one** signal `(channels, length)` as a `torch.Tensor`, applies the validation transform of the task and returns a tensor `(n, 4)` with columns `[left, right, confidence, class]` in samples of the original signal.
+A checkpoint is a `torch.save` dict with `model`, `ema` and `epoch`; `Trainer.load_checkpoint()` loads it and `Trainer.predict()` runs the EMA model. `predict()` takes **one** signal `(channels, length)` as a `torch.Tensor`, applies the validation transform of the task and returns a tensor `(n, 4)` with columns `[left, right, confidence, class]` in samples of the original signal.
 
 ### 1. Run ECG Pipeline (LUDB Sample)
 
-Download LUDB first (13.8 MB from PhysioNet, verified by SHA-256): `python data/download_ludb.py`. Any other lead works as well, as long as it is sampled at 500 Hz, is at most 5000 samples long and is z-scored.
+Download LUDB first (13.8 MB from PhysioNet): `python data/download_ludb.py`. Any other lead works as well, as long as it is sampled at 500 Hz, is at most 5000 samples long and is z-scored.
 
 ```python
 import sys, torch
@@ -171,21 +170,21 @@ aluminothermic    41411 -    41614  conf=0.90      2 41408 41608
 aluminothermic    46262 -    46472  conf=0.87      2 46270 46470
 ```
 
-Notes: `predict()` accepts the raw `int16` array; the full preprocessing (including FastICA) runs on the CPU and takes several seconds per record the first time, afterwards the result is served from the cache folder of the manifest. Class ids of the ECRv1 labels (`1, 2, 3, 4, 5, 12`) are mapped to network classes `0 … 5` by `class_map` in the manifest. To evaluate a trained run on the whole `test` split use `python run_ec_ablation.py postprocess-eval A8` (writes `metrics_pp.json` next to the run).
+Notes: Class ids of the ECRv1 labels (`1, 2, 3, 4, 5, 12`) are mapped to network classes `0 … 5` by `class_map` in the manifest. To evaluate a trained run on the whole `test` split use `python run_ec_ablation.py postprocess-eval A8` (writes `metrics_pp.json` next to the run).
 
 ---
 
 ## Full Datasets & Training
 
-Every experiment is a YAML config whose `training:` block is a `TrainingSettings` object; a run folder keeps the resolved `args.yaml`, `environment.json` (git hash, versions, GPU), `step.csv` with per-epoch metrics, `metrics.json` and the checkpoints. Finished runs are skipped on re-launch (`--rerun` to force).
+Every experiment is a YAML config whose `training:` block is a `TrainingSettings` object; a run folder keeps the resolved `args.yaml`, `environment.json`, `step.csv` with per-epoch metrics, `metrics.json` and the checkpoints. Finished runs are skipped on re-launch (`--rerun` to force).
 
 ### Task 1 — LUDB
 
 ```bash
-python data/download_ludb.py        # LUDB v1.0.1 from PhysioNet -> data/raw/ludb/ (SHA-256 verified)
+python data/download_ludb.py        # LUDB v1.0.1 from PhysioNet -> data/raw/ludb/ 
 python data/download_nstdb.py       # MIT-BIH NSTDB noise records bw/ma/em -> data/raw/nstdb/ (augmentation N5)
 python data/prepare_ludb.py         # per-lead examples -> data/processed/ludb/ (+ manifest.csv, data/ludb.yaml)
-python data/make_splits.py          # 5 patient-level folds -> data/splits/fold_<k>.yaml (tracked in git)
+python data/make_splits.py          # 5 patient-level folds -> data/splits/fold_<k>.yaml
 
 # final single-lead model of the paper: nano, 16 augmentations, 250 epochs, 5 folds x seeds {2, 3}
 python run_experiment.py experiments/configs/final.yaml
@@ -200,7 +199,7 @@ python run_experiment.py experiments/configs/mc_full.yaml
 python experiments/report/make_report.py
 ```
 
-Results go to `experiments/<name>/` (`summary.md` pools the test folds; one line per experiment is appended to `experiments/results.csv`). One fold trains in about 10–20 min on an RTX 5060 Ti. Pooled test result of `experiments/configs/final.yaml` (5 folds × 2 seeds): mean F1 over the six fiducial points 98.73 ± 0.33 %, mean boundary SD 13.6 ms (`experiments/final/summary.md`, `docs/results/E4_final.md`).
+Results go to `experiments/<name>/` (`summary.md` pools the test folds; one line per experiment is appended to `experiments/results.csv`). Pooled test result of `experiments/configs/final.yaml` (5 folds × 2 seeds): mean F1 over the six fiducial points 98.73 ± 0.33 %, mean boundary SD 13.6 ms (`experiments/final/summary.md`, `docs/results/E4_final.md`).
 
 ### Task 2 — ECRv1
 
@@ -217,9 +216,7 @@ python run_ec_ablation.py postprocess-eval A0 A8       # re-evaluate best.pt wit
 python run_ec_ablation.py summary                      # summary.csv / summary_agg.csv / summary.md
 ```
 
-Runs go to `experiments/ec_ablation/runs/<ID>_s<seed>/`. Preprocessing is computed by the DataLoader workers (set `num_workers` in the config to your CPU) and cached in `data/cache/`. On the test split the A8 model reaches mAP@0.5:0.95 = 81.6 % and mAP@0.5 = 96.5 % (seed 0, `experiments/ec_ablation/summary.md`).
-
-Old-style training without the experiment runners is shown in `start_example.py` (`TrainingSettings` → `Trainer.train()` / `validate()` / `test()`).
+Runs go to `experiments/ec_ablation/runs/<ID>_s<seed>/`. Preprocessing is computed by the DataLoader workers and cached in `data/cache/`. On the test split the A8 model reaches mAP@0.5:0.95 = 81.6 % and mAP@0.5 = 96.5 % (seed 0, `experiments/ec_ablation/summary.md`).
 
 ---
 
@@ -230,11 +227,9 @@ Old-style training without the experiment runners is shown in `start_example.py`
 ├── pyproject.toml               # package `yolo_1d` (src layout); extra `hf` = huggingface_hub
 ├── SPEC.md, TASKS.md            # task specification and work log: ECRv1 augmentation ablation (Russian)
 ├── SPEC_ECG.md, TASKS_ECG.md    # the same for the ECG transfer experiment (Russian)
-├── CLAUDE_ECG.md                # original brief of the ECG experiment
 ├── run_experiment.py            # ECG: k-fold x seeds training + delineation evaluation from a YAML config
 ├── run_ec_ablation.py           # ECRv1: make-configs / train / noisy-test / postprocess-eval / summary
 ├── start_example.py             # minimal Trainer usage without the runners (legacy)
-├── plots.py, test_dataset.py    # ad-hoc plotting / dataset inspection scripts
 ├── src/yolo_1d/
 │   ├── __init__.py              # exports Trainer, TrainingSettings, read_settings, save_settings
 │   ├── yolo_1d.py               # Trainer: train / validate / test / predict / evaluate_delineation / export_onnx
@@ -251,7 +246,7 @@ Old-style training without the experiment runners is shown in `start_example.py`
 │       ├── ludb.py              # WFDB reader for LUDB records and annotations
 │       ├── ludb_preprocess.py   # z-score / band-pass, annotated zone, labels for one lead
 │       ├── ecr.py               # ECRv1: local folder or Hugging Face, layout check, manifest writer
-│       ├── eddy/                # eddy-current preprocessing numerics (ICA, Fourier alignment, Kuzmin thresholds)
+│       ├── eddy/                # eddy-current preprocessing numerics (ICA, Fourier alignment, thresholds)
 │       ├── transforms/          # transform pipelines: eddy_preprocess.py, transforms.py, square_noises.py,
 │       │                        # ecg_transforms.py, ecg_multilead_transforms.py, edge_mask.py, build_transforms.py
 │       └── logging.py, constants.py
@@ -267,7 +262,7 @@ Old-style training without the experiment runners is shown in `start_example.py`
 │   ├── README.md                # run layout and metric files (Russian)
 │   ├── configs/                 # ECG experiment configs (baseline, e2*, abl_*, final, mc_*)
 │   ├── final/, mc_full/, ...    # ECG runs: args.yaml, step.csv, metrics; checkpoints are git-ignored
-│   ├── ec_ablation/             # ECRv1: configs/A0..A8, runs/, summary.*, bootstrap, budget pilot
+│   ├── ec_ablation/             # ECRv1: configs/A0..A8, runs/, summary.*, bootstrap
 │   ├── report/                  # make_report.py -> tables (md/tex) and figures of the paper
 │   ├── scripts/                 # analysis and plotting scripts for the ECG experiments
 │   └── results.csv              # registry of ECG experiments
@@ -290,13 +285,13 @@ Old-style training without the experiment runners is shown in `start_example.py`
 
 ## License and Intellectual Property
 
-This project was developed at **[University Name in English]** (*[Department or Laboratory Name]*).
+This project was developed at **P.G. Demidov Yaroslavl State University** (*Department of Theoretical Computer Sciences*).
 
 * **Source Code & Pre-trained Weights:** Licensed under the [Apache License 2.0](LICENSE) (see [NOTICE](NOTICE) for attribution details).
-* **Defectogram Dataset:** Licensed under the [Creative Commons Attribution 4.0 International (CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/) license.
+* **Defectogram Dataset ECRv1:** Licensed under the [Creative Commons Attribution 4.0 International (CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/) license<!-- and avaliable on [link](https://huggingface.co/datasets/Nasochec/ECRv1) -->.
 
-Copyright (c) 2026 [University Name in English].  
-Developed by: [Your Name], [Co-author Name].
+Copyright (c) 2026 P.G. Demidov Yaroslavl State University.  
+Developed by: Gladkov A. N., Bystrov L. Y., and Kuzmin E. V..
 
 <!-- РАСКОММЕНТИРОВАТЬ ПОСЛЕ ПОЛУЧЕНИЯ СВИДЕТЕЛЬСТВ РОСПАТЕНТА:
 ### State Registration of Intellectual Property (Rospatent / FIPS)
@@ -312,18 +307,21 @@ Developed by: [Your Name], [Co-author Name].
 If you use our neural network architecture, processing pipelines, pre-trained weights, or dataset in your research, please cite our paper:
 
 ```bibtex
-@article{surname2026modelname,
-  title   = {[English Title of Your Paper]},
-  author  = {[Surname, Name and Coauthor, Name]},
-  journal = {[English or Transliterated Name of the RSCI Journal]},
-  year    = {2026},
+@article{Gladkov2027,
+  title   = {Neural Network YOLO-1D for Useful Signals Detection on Eddy Current Rail Defectograms},
+  author  = {Gladkov A.N. and Bystrov L.Y. and Kuzmin E.V.},
+  note    = {Submitted to Trudy ISP RAN/Proc. ISP RAS},
+}
+```
+  <!--
+  year    = {2027},
+  journal = {[Trudy ISP RAN/Proc. ISP RAS]},
   volume  = {[XX]},
   number  = {[X]},
   pages   = {[XX--XX]},
   doi     = {[10.XXXX/XXXXXX]},
-  note    = {RSCI. EDN: [XXXXXX]}
-}
-```
+  note    = {RSCI. EDN: [XXXXXX]}-->
 
-**Для цитирования в русскоязычных изданиях (РИНЦ / ГОСТ):**
-> *Фамилия И. О., Соавтор И. О.* Название вашей статьи на русском языке // Название журнала. — 2026. — Т. XX, № X. — С. XX–XX. — DOI: 10.XXXX/XXXXXX. — EDN: XXXXXX.
+
+<!-- **Для цитирования в русскоязычных изданиях (РИНЦ / ГОСТ):**
+> *Фамилия И. О., Соавтор И. О.* Название вашей статьи на русском языке // Название журнала. — 2026. — Т. XX, № X. — С. XX–XX. — DOI: 10.XXXX/XXXXXX. — EDN: XXXXXX. -->
