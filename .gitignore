@@ -164,6 +164,9 @@ data/cache/
 labels.cache
 *.labels.cache
 
+# pre-trained checkpoints downloaded from the Hugging Face Model Hub (see README, Quick Start)
+weights/
+
 # experiments: checkpoints and raw predictions stay local (metrics, logs, summaries are tracked)
 experiments/**/*.pt
 experiments/**/predictions_*.json

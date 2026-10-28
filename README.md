@@ -15,8 +15,8 @@ All components of this research are openly available for academic and commercial
 | Component | Task / Domain | Link | License | Rospatent Reg. No. |
 | :--- | :--- | :--- | :--- | :--- |
 | **Source Code** | Core backbone + ECG & Defectogram pipelines | This repository | [Apache 2.0](LICENSE) | *Pending* <!-- No. 20266XXXXXX, No. 20266YYYYYY --> |
-| **Weights (Task 1)** | Pre-trained checkpoint for ECG (LUDB) | [HF Model Hub](https://huggingface.co/[your-username]/[ecg-weights-repo]) | [Apache 2.0](LICENSE) | *Included in SW Reg.* |
-| **Weights (Task 2)** | Pre-trained checkpoint for Defectograms | [HF Model Hub](https://huggingface.co/[your-username]/[defect-weights-repo]) | [Apache 2.0](LICENSE) | *Included in SW Reg.* |
+| **Weights (Task 1)** | Pre-trained checkpoint for ECG (LUDB) | [HF Model Hub](https://huggingface.co/Nasochec/YOLO-1D_ECG_LUDB) | [Apache 2.0](LICENSE) | *Included in SW Reg.* |
+| **Weights (Task 2)** | Pre-trained checkpoint for Defectograms | [HF Model Hub](https://huggingface.co/Nasochec/YOLO-1D_ECRv1) | [Apache 2.0](LICENSE) | *Included in SW Reg.* |
 | **Defectogram Dataset** | New large-scale annotated dataset for Task 2 | [HF Datasets](https://huggingface.co/datasets/Nasochec/ECRv1) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) | *Pending* <!-- No. 202662ZZZZZ --> |
 
 ---
@@ -83,18 +83,26 @@ python -m pytest tests -q
 
 There are no bundled sample files or notebooks; the snippets below are the actual API and were run against the checkpoints of this repository.
 
-**Where the weights are.** Training writes `best.pt` / `last.pt` next to `args.yaml` in the run folder. The `args.yaml` files are tracked in git, the checkpoints are not (`experiments/**/*.pt` is in `.gitignore`), so download them from the links in the table above (or train, see below) and put them at:
+**Download the weights.** The pre-trained checkpoints are published on the Hugging Face Model Hub together with the `args.yaml` of the run (the full `TrainingSettings` the model was trained with) and a model card with the data split, metrics and licensing details. Download each model into its own folder (`weights/` is git-ignored):
 
-| Task | Run folder (contains `args.yaml`) | Put the checkpoint at |
-| :--- | :--- | :--- |
-| ECG, single-lead (E4, fold 0, seed 2) | `experiments/final/fold0_seed2/train1/` | `experiments/final/fold0_seed2/train1/best.pt` |
-| Eddy Current Defectograms, full augmentation set A8 | `experiments/ec_ablation/runs/A8_s0/train1/` | `experiments/ec_ablation/runs/A8_s0/train1/best.pt` |
+```bash
+pip install huggingface_hub            # or: pip install -e .[hf]
+huggingface-cli download Nasochec/YOLO-1D_ECG_LUDB --local-dir weights/ecg   # ECG, 8.5 MB
+huggingface-cli download Nasochec/YOLO-1D_ECRv1    --local-dir weights/ecr   # Defectograms, 111 MB
+```
+
+| Task | Model Hub | Local folder | Model | Test result |
+| :--- | :--- | :--- | :--- | :--- |
+| ECG delineation (LUDB) | [Nasochec/YOLO-1D_ECG_LUDB](https://huggingface.co/Nasochec/YOLO-1D_ECG_LUDB) | `weights/ecg/` | `nano`, 1.07 M parameters, single lead; E4 configuration, fold 0 of the 5-fold split, seed 2 | mean F1 over the six fiducial points 99.05 %, mean boundary SD 14.2 ms (fold 0 test split, 40 records) |
+| Eddy Current Defectograms (ECRv1) | [Nasochec/YOLO-1D_ECRv1](https://huggingface.co/Nasochec/YOLO-1D_ECRv1) | `weights/ecr/` | `large`, 14.5 M parameters, 30 input channels; full eddy-current augmentation set, 50 epochs, seed 0 | mAP@0.5:0.95 = 82.4 %, mAP@0.5 = 96.2 % (83.1 % / 96.7 % with nested-object post-processing; ECRv1 test split, 294 signals) |
+
+Each folder then contains `best.pt` and `args.yaml`, which is all the snippets below need. Your own training runs produce the same two files next to each other in `experiments/<run>/train1/` (checkpoints are git-ignored), so a run folder can be used in place of `weights/<task>` everywhere.
 
 A checkpoint is a `torch.save` dict with `model`, `ema` and `epoch`; `Trainer.load_checkpoint()` loads it and `Trainer.predict()` runs the EMA model. `predict()` takes **one** signal `(channels, length)` as a `torch.Tensor`, applies the validation transform of the task and returns a tensor `(n, 4)` with columns `[left, right, confidence, class]` in samples of the original signal.
 
 ### 1. Run ECG Pipeline (LUDB Sample)
 
-Download LUDB first (13.8 MB from PhysioNet): `python data/download_ludb.py`. Any other lead works as well, as long as it is sampled at 500 Hz, is at most 5000 samples long and is z-scored.
+Download the weights (above) and LUDB (13.8 MB from PhysioNet): `python data/download_ludb.py`. Any other lead works as well, as long as it is sampled at 500 Hz, is at most 5000 samples long and is z-scored.
 
 ```python
 import sys, torch
@@ -103,7 +111,7 @@ from yolo_1d import Trainer, read_settings
 from yolo_1d.utils.ludb import load_record, LEADS
 from yolo_1d.utils.ludb_preprocess import zscore
 
-run = "experiments/final/fold0_seed2/train1"                # args.yaml is tracked in git, best.pt is not
+run = "weights/ecg"                                         # downloaded from the Model Hub (best.pt + args.yaml)
 settings = read_settings(f"{run}/args.yaml")                # full TrainingSettings of that run
 settings.dataset = None                                     # no dataset needed for inference
 trainer = Trainer(settings)                                 # builds the model and the test transform (pad 5000 -> 5120)
@@ -144,7 +152,7 @@ import sys, numpy as np, torch
 sys.path.insert(0, "src")
 from yolo_1d import Trainer, read_settings
 
-run = "experiments/ec_ablation/runs/A8_s0/train1"
+run = "weights/ecr"                                         # downloaded from the Model Hub (best.pt + args.yaml)
 settings = read_settings(f"{run}/args.yaml")
 settings.dataset = "data/ecr_v1.yaml"                       # manifest from data/prepare_ecr.py: switches the Trainer to
                                                             # the eddy-current preprocessing and sets its cache folder
@@ -160,14 +168,14 @@ for begin, end, conf, cls in det.tolist():
 Output for that test record, next to its ground truth (`test/labels/passage24_left_0003.txt`, format `type begin end` with the original class ids `2 = aluminothermic`, `5 = crossing`):
 
 ```text
-      crossing    24629 -    27548  conf=0.97      5 24537 27687
-aluminothermic     9223 -     9426  conf=0.91      2  9221  9421
-aluminothermic    13443 -    13650  conf=0.91      2 13443 13643
-aluminothermic    17136 -    17345  conf=0.91      2 17146 17346
-aluminothermic    22144 -    22353  conf=0.91      2 22143 22343
-aluminothermic    29236 -    29438  conf=0.91      2 29235 29435
-aluminothermic    41411 -    41614  conf=0.90      2 41408 41608
-aluminothermic    46262 -    46472  conf=0.87      2 46270 46470
+      crossing    24628 -    27559  conf=0.99      5 24537 27687
+aluminothermic    22141 -    22352  conf=0.93      2 22143 22343
+aluminothermic     9223 -     9423  conf=0.92      2  9221  9421
+aluminothermic    41411 -    41616  conf=0.92      2 41408 41608
+aluminothermic    29233 -    29438  conf=0.91      2 29235 29435
+aluminothermic    46268 -    46479  conf=0.90      2 46270 46470
+aluminothermic    13431 -    13643  conf=0.90      2 13443 13643
+aluminothermic    17132 -    17344  conf=0.89      2 17146 17346
 ```
 
 Notes: Class ids of the ECRv1 labels (`1, 2, 3, 4, 5, 12`) are mapped to network classes `0 … 5` by `class_map` in the manifest. To evaluate a trained run on the whole `test` split use `python run_ec_ablation.py postprocess-eval A8` (writes `metrics_pp.json` next to the run).
@@ -216,7 +224,7 @@ python run_ec_ablation.py postprocess-eval A0 A8       # re-evaluate best.pt wit
 python run_ec_ablation.py summary                      # summary.csv / summary_agg.csv / summary.md
 ```
 
-Runs go to `experiments/ec_ablation/runs/<ID>_s<seed>/`. Preprocessing is computed by the DataLoader workers and cached in `data/cache/`. On the test split the A8 model reaches mAP@0.5:0.95 = 81.6 % and mAP@0.5 = 96.5 % (seed 0, `experiments/ec_ablation/summary.md`).
+Runs go to `experiments/ec_ablation/runs/<ID>_s<seed>/`. Preprocessing is computed by the DataLoader workers and cached in `data/cache/`. On the test split the A8 model reaches mAP@0.5:0.95 = 81.6 % and mAP@0.5 = 96.5 % (seed 0, `experiments/ec_ablation/summary.md`); the released checkpoint (`weights/ecr`, [Nasochec/YOLO-1D_ECRv1](https://huggingface.co/Nasochec/YOLO-1D_ECRv1)) reaches 82.4 % and 96.2 %, and 83.1 % / 96.7 % with nested-object post-processing (`postprocess-eval`).
 
 ---
 
@@ -258,6 +266,9 @@ Runs go to `experiments/ec_ablation/runs/<ID>_s<seed>/`. Preprocessing is comput
 │   ├── splits/                  # LUDB 5-fold patient-level splits (tracked)
 │   ├── reports/                 # LUDB data report and figures
 │   └── raw/, processed/, cache/ # downloaded data, prepared examples, preprocessing cache (git-ignored)
+├── weights/                     # pre-trained checkpoints downloaded from the Model Hub (git-ignored)
+│   ├── ecg/                     # Nasochec/YOLO-1D_ECG_LUDB: best.pt + args.yaml
+│   └── ecr/                     # Nasochec/YOLO-1D_ECRv1:    best.pt + args.yaml
 ├── experiments/
 │   ├── README.md                # run layout and metric files (Russian)
 │   ├── configs/                 # ECG experiment configs (baseline, e2*, abl_*, final, mc_*)
