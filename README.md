@@ -1,4 +1,4 @@
-# YOLO-1D: A Unified Neural Architecture for ECG Delineation and Defectogram Analysis
+# YOLO-1D: Universal Model for Object Detection Task in One Dimensional Signals
 
 Official repository for the paper **"Neural Network YOLO-1D for Useful Signals Detection on Eddy Current Rail Defectograms"** published in *Trudy ISP RAN/Proc. ISP RAS* (RSCI).
 
